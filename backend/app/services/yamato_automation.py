@@ -7,7 +7,7 @@ from app.models.order import ShopifyOrder, ShippingResult, ShippingStatus
 QR_CODE_DIR = Path("qr_codes")
 QR_CODE_DIR.mkdir(exist_ok=True)
 
-YAMATO_SEND_URL = "https://m.kuronekoyamato.co.jp/s/send"
+YAMATO_SEND_URL = "https://sp-send.kuronekoyamato.co.jp/"
 
 DEVICE_CONFIG = {
     "user_agent": (
@@ -208,4 +208,35 @@ async def _fill_recipient_info(page, order: ShopifyOrder):
 
 
 async def _fill_sender_info(page, settings):
-    pass
+    if not settings.sender_name:
+        return
+
+    sender_name_input = page.locator('input[name*="sender_name"], input[name*="senderName"], input[placeholder*="依頼主"]')
+    if await sender_name_input.count() > 0:
+        await sender_name_input.first.fill(settings.sender_name)
+        await page.wait_for_timeout(500)
+
+    if settings.sender_postal_code:
+        sender_postal = page.locator('input[name*="sender_postal"], input[name*="senderZip"]')
+        if await sender_postal.count() > 0:
+            postal = settings.sender_postal_code.replace("-", "")
+            await sender_postal.first.fill(postal)
+            await page.wait_for_timeout(1500)
+
+    if settings.sender_address1:
+        sender_addr1 = page.locator('input[name*="sender_address1"], input[name*="senderAddr1"]')
+        if await sender_addr1.count() > 0:
+            await sender_addr1.first.fill(settings.sender_address1)
+            await page.wait_for_timeout(500)
+
+    if settings.sender_address2:
+        sender_addr2 = page.locator('input[name*="sender_address2"], input[name*="senderAddr2"]')
+        if await sender_addr2.count() > 0:
+            await sender_addr2.first.fill(settings.sender_address2)
+            await page.wait_for_timeout(500)
+
+    if settings.sender_phone:
+        sender_phone = page.locator('input[name*="sender_phone"], input[name*="senderTel"]')
+        if await sender_phone.count() > 0:
+            await sender_phone.first.fill(settings.sender_phone)
+            await page.wait_for_timeout(500)
