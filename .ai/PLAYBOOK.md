@@ -153,7 +153,7 @@ The goal is **骨太な方針（core decisions）を正確に保つ** - not to u
 
 - Don't update CONTEXT.md for bug fixes or minor refactors
 - Don't update PLAYBOOK.md for one-off workarounds
-- Don't rewrite TIPS.md entries - only append new ones
+- Don't rewrite TIPS.md entries - only append new ones (exception: fix factually wrong information with a `[Corrected YYYY-MM-DD]` note)
 
 ### Owner Decision Changes
 
