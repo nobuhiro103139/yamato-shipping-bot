@@ -10,7 +10,8 @@ UNFULFILLED_ORDERS_QUERY = """
         id
         name
         shippingAddress {
-          name
+          firstName
+          lastName
           zip
           province
           city
@@ -93,7 +94,8 @@ async def fetch_unfulfilled_orders() -> list[ShopifyOrder]:
         ]
 
         address = ShippingAddress(
-            name=shipping_addr.get("name", ""),
+            last_name=shipping_addr.get("lastName", ""),
+            first_name=shipping_addr.get("firstName", ""),
             postal_code=shipping_addr.get("zip", ""),
             province=shipping_addr.get("province", ""),
             city=shipping_addr.get("city", ""),
