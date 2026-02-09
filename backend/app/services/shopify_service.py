@@ -49,7 +49,7 @@ def _determine_package_size(items: list[OrderItem]) -> PackageSize:
     return PackageSize.LL
 
 
-SHOPIFY_API_VERSION = "2025-01"
+SHOPIFY_API_VERSION = "2025-10"
 SHOPIFY_REQUEST_TIMEOUT = 30.0
 
 

@@ -1,6 +1,9 @@
+from functools import lru_cache
+
 from pydantic import field_validator
 from pydantic_settings import BaseSettings
-from functools import lru_cache
+
+from app.models.order import PackageSize
 
 
 class Settings(BaseSettings):
@@ -26,7 +29,7 @@ class Settings(BaseSettings):
     @classmethod
     def validate_package_size(cls, v: str) -> str:
         """Validate that package size is one of the allowed values."""
-        allowed = {"S", "M", "L", "LL"}
+        allowed = {size.value for size in PackageSize}
         if v not in allowed:
             raise ValueError(f"default_package_size must be one of {allowed}, got '{v}'")
         return v

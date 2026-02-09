@@ -1,8 +1,12 @@
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from app.config import Settings, get_settings
 from app.models.order import ShopifyOrder, ShippingResult, ShippingStatus
+
+if TYPE_CHECKING:
+    from playwright.async_api import Page
 
 QR_CODE_DIR = Path("qr_codes")
 QR_CODE_DIR.mkdir(exist_ok=True)
@@ -159,7 +163,7 @@ async def _run_yamato_automation(
         except Exception as e:
             error_screenshot = str(QR_CODE_DIR / f"{order.order_number}_error.png")
             await page.screenshot(path=error_screenshot, full_page=True)
-            raise e
+            raise
 
         finally:
             await browser.close()
