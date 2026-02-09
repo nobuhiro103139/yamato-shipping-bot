@@ -30,19 +30,63 @@
 ## Project Structure
 
 ```
-backend/app/
-├── main.py              # FastAPI entry point (CORS configurable)
-├── cli.py               # CLI runner (ship/check/health)
-├── config.py            # pydantic-settings (env vars, validation)
-├── models/order.py      # Pydantic models (ShopifyOrder, ShippingResult, etc.)
-├── routers/             # orders.py, shipping.py
-└── services/
-    ├── shopify_service.py      # Shopify GraphQL API integration
-    └── yamato_automation.py    # Playwright automation engine (core)
-frontend/src/            # React dashboard (incomplete)
-Dockerfile               # Python 3.12-slim + Playwright + non-root user
-docker-compose.yml       # backend (API) + runner (CLI) services
+yamato-shipping-bot/
+├── .ai/                         # AI agent context (you are here)
+├── backend/
+│   ├── app/
+│   │   ├── main.py              # FastAPI entry point (CORS configurable)
+│   │   ├── cli.py               # CLI runner (ship/check/health)
+│   │   ├── config.py            # pydantic-settings (env vars, validation)
+│   │   ├── __main__.py          # CLI entry point
+│   │   ├── models/
+│   │   │   └── order.py         # Pydantic models (ShopifyOrder, ShippingResult, etc.)
+│   │   ├── routers/
+│   │   │   ├── orders.py        # GET /api/orders/unfulfilled
+│   │   │   └── shipping.py      # POST /api/shipping/process, init-auth
+│   │   └── services/
+│   │       ├── shopify_service.py    # Shopify GraphQL API integration
+│   │       └── yamato_automation.py  # Playwright automation engine (core)
+│   ├── .env.example
+│   └── pyproject.toml
+├── frontend/
+│   └── src/
+│       ├── App.tsx              # Main application component
+│       ├── api.ts               # Backend API client
+│       ├── types.ts             # TypeScript type definitions
+│       └── components/          # UI components
+├── Dockerfile                   # Python 3.12-slim + Playwright + non-root user
+├── docker-compose.yml           # backend (API) + runner (CLI) services
+└── README.md
 ```
+
+## Import Dependency Graph
+
+Understanding the import chain is critical to avoid circular imports.
+
+```
+models/order.py          (defines: PackageSize, ShippingStatus, ShopifyOrder, ShippingResult, etc.)
+    ^
+    |  imports PackageSize
+    |
+config.py                (defines: Settings, get_settings)
+    ^
+    |  imports get_settings
+    |
+services/shopify_service.py    (imports: config, models)
+services/yamato_automation.py  (imports: config, models)
+    ^
+    |  imports services
+    |
+routers/orders.py        (imports: services)
+routers/shipping.py      (imports: services)
+    ^
+    |  includes routers
+    |
+main.py                  (FastAPI app assembly)
+cli.py                   (CLI entry point, imports services directly)
+```
+
+**Forbidden path:** `models/order.py` must NEVER import from `config.py` (circular import).
 
 ## Architecture Decisions
 
@@ -54,10 +98,16 @@ docker-compose.yml       # backend (API) + runner (CLI) services
 
 ## Key Data Models
 
-- `ShopifyOrder` - Unfulfilled Shopify order with shipping address and items
-- `ShippingResult` - Outcome of a shipment (status: PENDING/PROCESSING/COMPLETED/FAILED)
-- `ShippingAddress` - Recipient details (name, postal code, address, phone)
-- `PackageSize` - Enum: S, M, L, LL (determined by item quantity)
+All defined in `backend/app/models/order.py`:
+
+| Model | Purpose | Key Fields |
+|-------|---------|------------|
+| `ShopifyOrder` | Unfulfilled order | `order_id`, `order_number`, `shipping_address`, `items`, `package_size` |
+| `ShippingResult` | Shipment outcome | `order_id`, `status`, `qr_code_path`, `error_message` |
+| `ShippingAddress` | Recipient details | `name`, `postal_code`, `province`, `city`, `address1`, `address2`, `phone` |
+| `OrderItem` | Product line item | `title`, `quantity` |
+| `PackageSize` | Enum: S, M, L, LL | Determined by total item quantity |
+| `ShippingStatus` | Enum: PENDING, PROCESSING, COMPLETED, FAILED | Tracks shipment lifecycle |
 
 ## API Endpoints
 
@@ -78,24 +128,26 @@ docker-compose.yml       # backend (API) + runner (CLI) services
 
 ## Required Secrets / Environment Variables
 
-| Variable | Description |
-|----------|-------------|
-| `SHOPIFY_STORE_URL` | Shopify store URL |
-| `SHOPIFY_ACCESS_TOKEN` | Shopify Admin API token |
-| `KURONEKO_LOGIN_ID` | Kuroneko Members login ID |
-| `KURONEKO_PASSWORD` | Kuroneko Members password |
-| `SENDER_NAME` | Sender name |
-| `SENDER_POSTAL_CODE` | Sender postal code |
-| `SENDER_ADDRESS1` | Sender address line 1 |
-| `SENDER_ADDRESS2` | Sender address line 2 (optional) |
-| `SENDER_PHONE` | Sender phone number |
-| `HEADLESS_BROWSER` | Headless mode (true/false) |
-| `AUTH_STATE_PATH` | Auth state file path (default: auth.json) |
+| Variable | Description | Required |
+|----------|-------------|----------|
+| `SHOPIFY_STORE_URL` | Shopify store URL | Yes |
+| `SHOPIFY_ACCESS_TOKEN` | Shopify Admin API token | Yes |
+| `KURONEKO_LOGIN_ID` | Kuroneko Members login ID | Yes |
+| `KURONEKO_PASSWORD` | Kuroneko Members password | Yes |
+| `SENDER_NAME` | Sender name | Yes |
+| `SENDER_POSTAL_CODE` | Sender postal code | Yes |
+| `SENDER_ADDRESS1` | Sender address line 1 | Yes |
+| `SENDER_ADDRESS2` | Sender address line 2 | No |
+| `SENDER_PHONE` | Sender phone number | Yes |
+| `HEADLESS_BROWSER` | Headless mode (default: true) | No |
+| `AUTH_STATE_PATH` | Auth state file path (default: auth.json) | No |
+| `DEFAULT_PACKAGE_SIZE` | Default package size for shipments (default: M) | No |
+| `CORS_ALLOWED_ORIGINS` | Allowed origins for CORS (default: localhost:5173,3000) | No |
 
 ## Operation Architecture
 
 ```
-Development: AI agents (Devin/Claude Code) for dev & review
+Development: AI agents (Devin / Claude Code / Gemini) for dev & review
   |
 Deploy: Docker image on Mac mini
   |
@@ -103,10 +155,3 @@ Execution: cron scheduled or manual `docker compose run`
   |
 Monitoring: Log review, error notification
 ```
-
-## Important Warnings
-
-- **Circular import:** `config.py` imports `PackageSize` from `models/order.py`. Do NOT import `config.py` from `models/order.py`.
-- **CSS Selectors:** All selectors in `yamato_automation.py` are best-guess estimates. They need real-site verification.
-- **PII Masking:** CLI log output masks personal info (first char of name + ***, address shows only prefecture + city).
-- **Yamato Maintenance:** Late night to early morning maintenance windows exist. Don't run form analysis during those hours.

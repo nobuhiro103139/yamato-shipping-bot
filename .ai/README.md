@@ -1,25 +1,26 @@
 # .ai/ Directory
 
-This directory contains AI-readable project context for automated development agents (Devin, Claude Code, etc.).
+This directory contains AI-readable project context for automated development agents
+(Devin, Claude Code, Gemini, Cursor, etc.).
 
 ## Files
 
-| File | Purpose |
-|------|---------|
-| `CONTEXT.md` | Project overview, architecture, tech stack, key models, API endpoints |
-| `STATUS.md` | Current development state, completed work, next TODOs, known issues |
-| `TIPS.md` | Accumulated development tips and discoveries (living document) |
-| `PLAYBOOK.md` | Devin playbook: step-by-step instructions for common tasks |
-| `README.md` | This file - explains the `.ai/` directory structure |
+| File | Purpose | When to read |
+|------|---------|-------------|
+| `CONTEXT.md` | Project overview, architecture, import graph, data models, API, env vars | Always (start here) |
+| `STATUS.md` | Current phase, completed work, prioritized TODOs with rationale | Always |
+| `TIPS.md` | Accumulated tips with searchable tags (living document) | Before making changes |
+| `PLAYBOOK.md` | Task workflows, anti-patterns, code quality checklist, agent-specific notes | Before starting a task |
+| `README.md` | This file | If you're unsure where to start |
 
 ## For AI Agents
 
 **Start here:**
-1. Read `CONTEXT.md` for the full project picture
-2. Read `STATUS.md` to know what's done and what's next
-3. Read `TIPS.md` for gotchas and known behaviors
-4. Follow `PLAYBOOK.md` for task-specific guidance
+1. Read `CONTEXT.md` for the full project picture and import dependency graph
+2. Read `STATUS.md` to know what's done, what's next, and why
+3. Read `TIPS.md` for gotchas and known behaviors (filter by tags)
+4. Follow `PLAYBOOK.md` for task-specific guidance and anti-patterns
 
 **After completing work:**
-1. Update `STATUS.md` with your progress
-2. Append discoveries to `TIPS.md`
+1. Update `STATUS.md` with your progress (include **Why** for new TODOs)
+2. Append discoveries to `TIPS.md` with appropriate **Tags**
