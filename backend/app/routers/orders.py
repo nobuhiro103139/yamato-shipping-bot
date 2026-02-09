@@ -6,9 +6,10 @@ router = APIRouter(prefix="/api/orders", tags=["orders"])
 
 
 @router.get("/unfulfilled", response_model=list[ShopifyOrder])
-async def get_unfulfilled_orders():
+async def get_unfulfilled_orders() -> list[ShopifyOrder]:
+    """Return all unfulfilled Shopify orders."""
     try:
         orders = await fetch_unfulfilled_orders()
         return orders
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e

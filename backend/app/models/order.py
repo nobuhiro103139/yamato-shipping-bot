@@ -3,6 +3,8 @@ from enum import Enum
 
 
 class PackageSize(str, Enum):
+    """Yamato package size categories."""
+
     S = "S"
     M = "M"
     L = "L"
@@ -10,6 +12,8 @@ class PackageSize(str, Enum):
 
 
 class ShippingAddress(BaseModel):
+    """Recipient shipping address extracted from a Shopify order."""
+
     name: str
     postal_code: str
     province: str
@@ -20,11 +24,15 @@ class ShippingAddress(BaseModel):
 
 
 class OrderItem(BaseModel):
+    """A single line item in a Shopify order."""
+
     title: str
     quantity: int
 
 
 class ShopifyOrder(BaseModel):
+    """An unfulfilled Shopify order with shipping details."""
+
     order_id: str
     order_number: str
     shipping_address: ShippingAddress
@@ -33,6 +41,8 @@ class ShopifyOrder(BaseModel):
 
 
 class ShippingStatus(str, Enum):
+    """Possible states of a shipment processing attempt."""
+
     PENDING = "pending"
     PROCESSING = "processing"
     COMPLETED = "completed"
@@ -40,6 +50,8 @@ class ShippingStatus(str, Enum):
 
 
 class ShippingResult(BaseModel):
+    """Result of processing a single order through Yamato automation."""
+
     order_id: str
     order_number: str
     status: ShippingStatus

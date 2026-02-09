@@ -1,15 +1,26 @@
 import os
-import asyncio
 from pathlib import Path
-from app.config import get_settings
+from typing import TYPE_CHECKING
+
+from app.config import Settings, get_settings
 from app.models.order import ShopifyOrder, ShippingResult, ShippingStatus
+
+if TYPE_CHECKING:
+    from playwright.async_api import Page
 
 QR_CODE_DIR = Path("qr_codes")
 QR_CODE_DIR.mkdir(exist_ok=True)
 
 YAMATO_SEND_URL = "https://sp-send.kuronekoyamato.co.jp/"
 
-DEVICE_CONFIG = {
+TIMEOUT_PAGE_LOAD_MS = 2000
+TIMEOUT_NAVIGATION_MS = 1000
+TIMEOUT_POSTAL_LOOKUP_MS = 1500
+TIMEOUT_INPUT_MS = 500
+SLOW_MO_MS = 500
+PRODUCT_NAME_MAX_LENGTH = 30
+
+DEVICE_CONFIG: dict[str, object] = {
     "user_agent": (
         "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) "
         "AppleWebKit/605.1.15 (KHTML, like Gecko) "
@@ -22,11 +33,12 @@ DEVICE_CONFIG = {
 }
 
 
-async def save_auth_state() -> dict:
-    """
-    Launch browser in headful mode for manual login.
-    After login, save the session state to auth.json.
-    This should be called once for initial setup.
+async def save_auth_state() -> dict[str, object]:
+    """Launch browser in headful mode for manual Kuroneko Members login.
+
+    Opens a visible browser window navigated to the Yamato send page.
+    The user should log in manually, then call /api/yamato/save-session
+    to persist the session state.
     """
     try:
         from playwright.async_api import async_playwright
@@ -54,9 +66,10 @@ async def save_auth_state() -> dict:
 
 
 async def process_shipment(order: ShopifyOrder) -> ShippingResult:
-    """
-    Automate the Yamato 'Send via Smartphone' flow for a single order.
-    Uses Playwright with mobile emulation.
+    """Automate the Yamato 'Send via Smartphone' flow for a single order.
+
+    Launches Playwright with mobile emulation, loads saved auth state,
+    and fills out the shipment form for the given order.
     """
     settings = get_settings()
     auth_path = settings.auth_state_path
@@ -92,14 +105,15 @@ async def process_shipment(order: ShopifyOrder) -> ShippingResult:
 
 
 async def _run_yamato_automation(
-    order: ShopifyOrder, settings, auth_path: str
+    order: ShopifyOrder, settings: Settings, auth_path: str
 ) -> ShippingResult:
+    """Run the full Yamato form automation flow inside a Playwright browser."""
     from playwright.async_api import async_playwright
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(
             headless=settings.headless_browser,
-            slow_mo=500,
+            slow_mo=SLOW_MO_MS,
         )
         context = await browser.new_context(
             **DEVICE_CONFIG,
@@ -109,31 +123,12 @@ async def _run_yamato_automation(
 
         try:
             await page.goto(YAMATO_SEND_URL, wait_until="domcontentloaded")
-            await page.wait_for_timeout(2000)
+            await page.wait_for_timeout(TIMEOUT_PAGE_LOAD_MS)
 
-            # Step 1: Select "通常の荷物を送る" (Send a regular package)
-            normal_send_btn = page.get_by_text("通常の荷物を送る")
-            if await normal_send_btn.count() > 0:
-                await normal_send_btn.first.click()
-                await page.wait_for_timeout(1000)
-
-            # Step 2: Select "発払い" (Prepaid)
-            prepaid_btn = page.get_by_text("発払い")
-            if await prepaid_btn.count() > 0:
-                await prepaid_btn.first.click()
-                await page.wait_for_timeout(1000)
-
-            # Step 3: Select package count (1個)
-            one_pkg_btn = page.get_by_text("1個")
-            if await one_pkg_btn.count() > 0:
-                await one_pkg_btn.first.click()
-                await page.wait_for_timeout(1000)
-
-            # Step 4: Select package size
-            size_btn = page.get_by_text(order.package_size.value)
-            if await size_btn.count() > 0:
-                await size_btn.first.click()
-                await page.wait_for_timeout(1000)
+            await _click_if_visible(page, "通常の荷物を送る")
+            await _click_if_visible(page, "発払い")
+            await _click_if_visible(page, "1個")
+            await _click_if_visible(page, order.package_size.value)
 
             # Step 5: Fill recipient (お届け先) information
             await _fill_recipient_info(page, order)
@@ -142,13 +137,11 @@ async def _run_yamato_automation(
             await _fill_sender_info(page, settings)
 
             # Step 7: Fill product name (品名)
-            product_names = ", ".join(
-                f"{item.title}" for item in order.items
-            )
+            product_names = ", ".join(item.title for item in order.items)
             product_name_input = page.locator('input[name*="product"], input[placeholder*="品名"]')
             if await product_name_input.count() > 0:
-                await product_name_input.first.fill(product_names[:30])
-                await page.wait_for_timeout(500)
+                await product_name_input.first.fill(product_names[:PRODUCT_NAME_MAX_LENGTH])
+                await page.wait_for_timeout(TIMEOUT_INPUT_MS)
 
             # Step 8: Take screenshot before payment for review
             screenshot_path = str(QR_CODE_DIR / f"{order.order_number}_confirmation.png")
@@ -170,71 +163,55 @@ async def _run_yamato_automation(
         except Exception as e:
             error_screenshot = str(QR_CODE_DIR / f"{order.order_number}_error.png")
             await page.screenshot(path=error_screenshot, full_page=True)
-            raise e
+            raise
 
         finally:
             await browser.close()
 
 
-async def _fill_recipient_info(page, order: ShopifyOrder):
+async def _click_if_visible(page: "Page", text: str) -> None:
+    """Click the first element matching *text* if it exists on the page."""
+    btn = page.get_by_text(text)
+    if await btn.count() > 0:
+        await btn.first.click()
+        await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
+
+
+async def _fill_input(page: "Page", selector: str, value: str, timeout_ms: int = TIMEOUT_INPUT_MS) -> None:
+    """Fill the first input matching *selector* with *value* if it exists."""
+    locator = page.locator(selector)
+    if await locator.count() > 0:
+        await locator.first.fill(value)
+        await page.wait_for_timeout(timeout_ms)
+
+
+async def _fill_recipient_info(page: "Page", order: ShopifyOrder) -> None:
+    """Fill the recipient (お届け先) section of the Yamato form."""
     addr = order.shipping_address
 
-    postal_input = page.locator('input[name*="postal"], input[name*="zip"], input[placeholder*="郵便番号"]')
-    if await postal_input.count() > 0:
-        postal_code = addr.postal_code.replace("-", "")
-        await postal_input.first.fill(postal_code)
-        await page.wait_for_timeout(1500)
-
-    name_input = page.locator('input[name*="name"], input[placeholder*="氏名"]')
-    if await name_input.count() > 0:
-        await name_input.first.fill(addr.name)
-        await page.wait_for_timeout(500)
-
-    addr1_input = page.locator('input[name*="address1"], input[name*="addr1"], input[placeholder*="番地"]')
-    if await addr1_input.count() > 0:
-        await addr1_input.first.fill(addr.address1)
-        await page.wait_for_timeout(500)
-
+    postal_code = addr.postal_code.replace("-", "")
+    await _fill_input(page, 'input[name*="postal"], input[name*="zip"], input[placeholder*="郵便番号"]', postal_code, TIMEOUT_POSTAL_LOOKUP_MS)
+    await _fill_input(page, 'input[name*="name"], input[placeholder*="氏名"]', addr.name)
+    await _fill_input(page, 'input[name*="address1"], input[name*="addr1"], input[placeholder*="番地"]', addr.address1)
     if addr.address2:
-        addr2_input = page.locator('input[name*="address2"], input[name*="addr2"], input[placeholder*="建物"]')
-        if await addr2_input.count() > 0:
-            await addr2_input.first.fill(addr.address2)
-            await page.wait_for_timeout(500)
-
-    phone_input = page.locator('input[name*="phone"], input[name*="tel"], input[placeholder*="電話"]')
-    if await phone_input.count() > 0:
-        await phone_input.first.fill(addr.phone)
-        await page.wait_for_timeout(500)
+        await _fill_input(page, 'input[name*="address2"], input[name*="addr2"], input[placeholder*="建物"]', addr.address2)
+    await _fill_input(page, 'input[name*="phone"], input[name*="tel"], input[placeholder*="電話"]', addr.phone)
 
 
-async def _fill_sender_info(page, settings):
+async def _fill_sender_info(page: "Page", settings: Settings) -> None:
+    """Fill the sender (ご依頼主) section of the Yamato form."""
     if settings.sender_name:
-        sender_name_input = page.locator('input[name*="sender_name"], input[name*="senderName"], input[placeholder*="依頼主"]')
-        if await sender_name_input.count() > 0:
-            await sender_name_input.first.fill(settings.sender_name)
-            await page.wait_for_timeout(500)
+        await _fill_input(page, 'input[name*="sender_name"], input[name*="senderName"], input[placeholder*="依頼主"]', settings.sender_name)
 
     if settings.sender_postal_code:
-        sender_postal = page.locator('input[name*="sender_postal"], input[name*="senderZip"]')
-        if await sender_postal.count() > 0:
-            postal = settings.sender_postal_code.replace("-", "")
-            await sender_postal.first.fill(postal)
-            await page.wait_for_timeout(1500)
+        postal = settings.sender_postal_code.replace("-", "")
+        await _fill_input(page, 'input[name*="sender_postal"], input[name*="senderZip"]', postal, TIMEOUT_POSTAL_LOOKUP_MS)
 
     if settings.sender_address1:
-        sender_addr1 = page.locator('input[name*="sender_address1"], input[name*="senderAddr1"]')
-        if await sender_addr1.count() > 0:
-            await sender_addr1.first.fill(settings.sender_address1)
-            await page.wait_for_timeout(500)
+        await _fill_input(page, 'input[name*="sender_address1"], input[name*="senderAddr1"]', settings.sender_address1)
 
     if settings.sender_address2:
-        sender_addr2 = page.locator('input[name*="sender_address2"], input[name*="senderAddr2"]')
-        if await sender_addr2.count() > 0:
-            await sender_addr2.first.fill(settings.sender_address2)
-            await page.wait_for_timeout(500)
+        await _fill_input(page, 'input[name*="sender_address2"], input[name*="senderAddr2"]', settings.sender_address2)
 
     if settings.sender_phone:
-        sender_phone = page.locator('input[name*="sender_phone"], input[name*="senderTel"]')
-        if await sender_phone.count() > 0:
-            await sender_phone.first.fill(settings.sender_phone)
-            await page.wait_for_timeout(500)
+        await _fill_input(page, 'input[name*="sender_phone"], input[name*="senderTel"]', settings.sender_phone)

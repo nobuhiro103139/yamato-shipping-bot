@@ -33,23 +33,33 @@ UNFULFILLED_ORDERS_QUERY = """
 """
 
 
+PACKAGE_SIZE_THRESHOLDS: list[tuple[int, PackageSize]] = [
+    (1, PackageSize.S),
+    (3, PackageSize.M),
+    (5, PackageSize.L),
+]
+
+
 def _determine_package_size(items: list[OrderItem]) -> PackageSize:
+    """Map total item quantity to the smallest sufficient package size."""
     total_quantity = sum(item.quantity for item in items)
-    if total_quantity <= 1:
-        return PackageSize.S
-    elif total_quantity <= 3:
-        return PackageSize.M
-    elif total_quantity <= 5:
-        return PackageSize.L
+    for threshold, size in PACKAGE_SIZE_THRESHOLDS:
+        if total_quantity <= threshold:
+            return size
     return PackageSize.LL
 
 
+SHOPIFY_API_VERSION = "2025-10"
+SHOPIFY_REQUEST_TIMEOUT = 30.0
+
+
 async def fetch_unfulfilled_orders() -> list[ShopifyOrder]:
+    """Fetch all unfulfilled orders from Shopify via GraphQL Admin API."""
     settings = get_settings()
-    if not settings.shopify_store_url or not settings.shopify_access_token:
+    if not settings.shopify_configured:
         return []
 
-    url = f"https://{settings.shopify_store_url}/admin/api/2025-01/graphql.json"
+    url = f"https://{settings.shopify_store_url}/admin/api/{SHOPIFY_API_VERSION}/graphql.json"
     headers = {
         "Content-Type": "application/json",
         "X-Shopify-Access-Token": settings.shopify_access_token,
@@ -60,7 +70,7 @@ async def fetch_unfulfilled_orders() -> list[ShopifyOrder]:
             url,
             json={"query": UNFULFILLED_ORDERS_QUERY},
             headers=headers,
-            timeout=30.0,
+            timeout=SHOPIFY_REQUEST_TIMEOUT,
         )
         response.raise_for_status()
         data = response.json()
