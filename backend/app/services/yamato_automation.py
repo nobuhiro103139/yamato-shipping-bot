@@ -175,10 +175,10 @@ async def _run_yamato_automation(
                 qr_code_path=screenshot_path,
             )
 
-        except Exception as e:
+        except Exception:
             error_screenshot = str(QR_CODE_DIR / f"{order.order_number}_error.png")
             await page.screenshot(path=error_screenshot, full_page=True)
-            raise e
+            raise
 
         finally:
             await browser.close()
@@ -225,7 +225,7 @@ async def _fill_package_settings(page: "Page", order: ShopifyOrder) -> None:
 
 async def _select_direct_address_input(page: "Page") -> None:
     """Select 'Enter address directly' on the delivery method page."""
-    await _click_if_visible(page, "直接住所を入力する")
+    await _click_if_visible(page, "直接住所を入力する", required=True)
 
 
 async def _fill_recipient_info(page: "Page", order: ShopifyOrder) -> None:
@@ -299,7 +299,7 @@ async def _click_if_visible(page: "Page", text: str, *, required: bool = False) 
         await btn.first.click()
         await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
     elif required:
-        raise RuntimeError(f"Required button not found: '{text}')")
+        raise RuntimeError(f"Required button not found: '{text}'")
 
 
 async def _fill_input(page: "Page", selector: str, value: str, timeout_ms: int = TIMEOUT_INPUT_MS) -> None:

@@ -33,7 +33,9 @@ async def run_shipment_batch() -> int:
         addr = order.shipping_address
         print(f"\nProcessing order {order.order_number}...")
         if addr:
-            print(f"  Recipient: {addr.last_name[:1]}***")
+            raw_name = addr.last_name or addr.first_name or ""
+            masked_name = f"{raw_name[:1]}***" if raw_name else "N/A"
+            print(f"  Recipient: {masked_name}")
             print(f"  Address: {addr.province}{addr.city}***")
         print(f"  Package size: {order.package_size.value}")
 
@@ -66,7 +68,11 @@ async def check_orders() -> int:
         return 1
     print(f"Unfulfilled orders: {len(orders)}")
     for order in orders:
-        name = (order.shipping_address.last_name[:1] + "***") if order.shipping_address else "N/A"
+        if order.shipping_address:
+            raw_name = order.shipping_address.last_name or order.shipping_address.first_name or ""
+            name = f"{raw_name[:1]}***" if raw_name else "N/A"
+        else:
+            name = "N/A"
         print(f"  {order.order_number}: {name} ({order.package_size.value})")
     return 0
 
