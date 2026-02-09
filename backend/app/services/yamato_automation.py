@@ -1,3 +1,4 @@
+import logging
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -6,8 +7,10 @@ from typing import TYPE_CHECKING
 from app.config import Settings, get_settings
 from app.models.order import PackageSize, ShopifyOrder, ShippingResult, ShippingStatus
 
+logger = logging.getLogger(__name__)
+
 if TYPE_CHECKING:
-    from playwright.async_api import Page
+    from playwright.async_api import Dialog, Page
 
 QR_CODE_DIR = Path("qr_codes")
 QR_CODE_DIR.mkdir(exist_ok=True)
@@ -162,7 +165,11 @@ async def _run_yamato_automation(
             storage_state=auth_path,
         )
         page = await context.new_page()
-        page.on("dialog", lambda dialog: dialog.accept())
+        async def _handle_dialog(dialog: "Dialog") -> None:
+            logger.info("Dialog [%s]: %s", dialog.type, dialog.message)
+            await dialog.accept()
+
+        page.on("dialog", _handle_dialog)
 
         try:
             await page.goto(YAMATO_SEND_URL, wait_until="domcontentloaded")
@@ -214,7 +221,7 @@ async def _fill_package_settings(page: "Page", order: ShopifyOrder) -> None:
     """Fill the package settings form (size, product name, handling, confirmation)."""
     size_label = PACKAGE_SIZE_LABELS.get(order.package_size)
     if size_label:
-        size_span = page.get_by_text(size_label, exact=False)
+        size_span = page.get_by_text(size_label, exact=True)
         if await size_span.count() > 0:
             await size_span.first.click()
             await page.wait_for_timeout(TIMEOUT_INPUT_MS)
@@ -309,8 +316,14 @@ async def _toggle_notification(page: "Page", email: str) -> None:
     """Check the delivery notification checkbox and fill the email field."""
     notify_label = page.get_by_text("お届け予定をお知らせ")
     if await notify_label.count() > 0:
-        await notify_label.first.click()
-        await page.wait_for_timeout(TIMEOUT_INPUT_MS)
+        checkbox = page.locator('input[type="checkbox"]').filter(has=notify_label)
+        if await checkbox.count() > 0:
+            if not await checkbox.first.is_checked():
+                await notify_label.first.click()
+                await page.wait_for_timeout(TIMEOUT_INPUT_MS)
+        else:
+            await notify_label.first.click()
+            await page.wait_for_timeout(TIMEOUT_INPUT_MS)
 
     email_input = page.locator('input[type="email"]')
     if await email_input.count() == 0:
@@ -326,13 +339,9 @@ async def _uncheck_address_book(page: "Page") -> None:
     if await address_book_label.count() > 0:
         checkbox = address_book_label.locator("xpath=ancestor::label//input[@type='checkbox']")
         if await checkbox.count() > 0:
-            is_checked = await checkbox.first.is_checked()
-            if is_checked:
+            if await checkbox.first.is_checked():
                 await address_book_label.first.click()
                 await page.wait_for_timeout(TIMEOUT_INPUT_MS)
-                return
-        await address_book_label.first.click()
-        await page.wait_for_timeout(TIMEOUT_INPUT_MS)
 
 
 async def _select_sender_from_address_book(page: "Page", settings: Settings) -> None:
@@ -346,13 +355,18 @@ async def _select_sender_from_address_book(page: "Page", settings: Settings) -> 
         await sender_entry.first.click()
         await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
     else:
+        logger.warning("Exact sender '%s' not found; attempting partial match", sender_name)
         parts = sender_name.split()
         for part in parts:
             entry = page.get_by_text(part, exact=False)
-            if await entry.count() > 0:
+            match_count = await entry.count()
+            if match_count == 1:
+                logger.warning("Selected sender via partial match on '%s'", part)
                 await entry.first.click()
                 await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
                 break
+            elif match_count > 1:
+                logger.warning("Partial match '%s' is ambiguous (%d results), skipping", part, match_count)
 
 
 async def _confirm_sender_info(page: "Page") -> None:
@@ -381,7 +395,16 @@ async def _fill_delivery_datetime(page: "Page", order: ShopifyOrder) -> None:
             await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
         return
 
-    delivery_dt = datetime.strptime(order.delivery_date, "%Y%m%d")
+    try:
+        delivery_dt = datetime.strptime(order.delivery_date, "%Y%m%d")
+    except ValueError:
+        logger.error("Invalid delivery_date format '%s' for order %s", order.delivery_date, order.order_number)
+        next_btn = page.locator("a#next")
+        if await next_btn.count() > 0:
+            await next_btn.first.click()
+            await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
+        return
+
     ship_dates = [
         (delivery_dt - timedelta(days=1)).strftime("%Y%m%d"),
         (delivery_dt - timedelta(days=2)).strftime("%Y%m%d"),
