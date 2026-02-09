@@ -14,7 +14,8 @@ class PackageSize(str, Enum):
 class ShippingAddress(BaseModel):
     """Recipient shipping address extracted from a Shopify order."""
 
-    name: str
+    last_name: str
+    first_name: str = ""
     postal_code: str
     province: str
     city: str

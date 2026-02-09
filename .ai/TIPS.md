@@ -32,12 +32,35 @@ If no category fits, create a new `## Category` section.
 - Form analysis and testing should be done outside these hours
 - Automation runs should be scheduled for business hours (e.g., 10:00 AM)
 
-### [2026-02-09] CSS Selectors are Estimates
-**Tags:** `yamato`, `playwright`, `selector`, `risk`
-**Last verified:** Not yet — selectors are best-guess estimates
-- All selectors in `yamato_automation.py` (e.g., `input[name*="postal"]`) are best-guess
-- Must verify with `playwright codegen --device="iPhone 13"` on the real site
-- Yamato may update their HTML without notice - selectors may break
+### [2026-02-09] CSS Selectors Verified Against Live Site
+**Tags:** `yamato`, `playwright`, `selector`, `verified`
+**Last verified:** 2026-02-09 (via manual browser inspection with mobile emulation)
+- Yamato uses Struts-based form bean naming: `viwb{pageId}ActionBean.{field}`
+- Package settings page (Viwb2050): `viwb2050ActionBean.size`, `.itemName`, `.notProhibited`
+- Recipient page (Viwb3040): `viwb3040ActionBean.lastName`, `.firstName`, `.zipCode`, `.address1`-`.address4`, `.phoneNumber`
+- Sender page (Viwb3130): `viwb3130ActionBean.lastName`, `.firstName`, `.zipCode`, `.address3`, `.address4`, `.phoneNumber`
+- Handling checkboxes: `input[name="handling"]` with `value="01"` (precision equipment), `"02"` (fragile), etc.
+- Next button on package page: `a[data-action="Viwb2050Action_doNext.action"]`
+- Address search button: `button#btnSearch`
+- Yamato may update their HTML without notice - re-verify if automation breaks
+
+### [2026-02-09] Yamato Form Flow (Guest Mode)
+**Tags:** `yamato`, `flow`, `guest`
+- Top page → "通常の荷物を送る" → "発払い" → "１個" → Package settings (Viwb2050)
+- Package settings → "直接住所を入力する" → Recipient form (Viwb3040)
+- Recipient form → Sender form (Viwb3130) → Confirmation → Payment
+- Guest mode does NOT require Kuroneko Members login for form filling
+- Payment step requires login or guest payment method
+
+### [2026-02-09] Yamato Address Field Mapping
+**Tags:** `yamato`, `address`, `form`
+- `address1`: Prefecture (都道府県) - auto-filled by postal code lookup
+- `address2`: City/district (市区町村) - auto-filled by postal code lookup (textarea)
+- `address3`: Street/block number (丁目・番地)
+- `address3opt`: Additional number (号)
+- `address4`: Building name/room number (建物名・部屋番号)
+- `companyName`: Company name (会社名) - optional
+- After entering zip code, click `button#btnSearch` and wait 3000ms for AJAX lookup
 
 ## Playwright / Browser Automation
 
@@ -57,8 +80,9 @@ If no category fits, create a new `## Category` section.
 
 ### [2026-02-09] Postal Code Lookup Delay
 **Tags:** `playwright`, `yamato`, `timing`, `ajax`
-- After entering postal code, Yamato's form triggers an AJAX lookup
-- Current wait: 1500ms (`TIMEOUT_POSTAL_LOOKUP_MS`)
+- After entering postal code, click `button#btnSearch` to trigger AJAX lookup
+- Current wait: 3000ms (`TIMEOUT_POSTAL_LOOKUP_MS`)
+- This auto-fills `address1` (prefecture) and `address2` (city)
 - If address fields aren't populated, increase this timeout
 
 ## Shopify Integration
@@ -99,9 +123,16 @@ If no category fits, create a new `## Category` section.
 
 ### [2026-02-09] Product Name Truncation
 **Tags:** `yamato`, `validation`, `form`
-- Yamato form has a 30-character limit for product names
-- `PRODUCT_NAME_MAX_LENGTH = 30` in `yamato_automation.py`
+- Yamato form `itemName` field has a `maxlength="17"` attribute
+- `PRODUCT_NAME_MAX_LENGTH = 17` in `yamato_automation.py`
 - Concatenated item titles are truncated to fit
+
+### [2026-02-09] Recipient Name Must Be Split Into Last/First
+**Tags:** `yamato`, `form`, `shopify`, `model`
+- Yamato requires separate `lastName` and `firstName` fields
+- Shopify provides separate `firstName` and `lastName` via GraphQL
+- `ShippingAddress` model has `last_name` and `first_name` fields
+- `shopify_service.py` maps Shopify `lastName`/`firstName` directly
 
 ## Docker / Deployment
 
