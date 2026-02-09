@@ -29,7 +29,7 @@
 
 ## Project Structure
 
-```
+```text
 yamato-shipping-bot/
 ├── .ai/                         # AI agent context (you are here)
 ├── backend/
@@ -63,7 +63,7 @@ yamato-shipping-bot/
 
 Understanding the import chain is critical to avoid circular imports.
 
-```
+```text
 models/order.py          (defines: PackageSize, ShippingStatus, ShopifyOrder, ShippingResult, etc.)
     ^
     |  imports PackageSize
@@ -146,7 +146,7 @@ All defined in `backend/app/models/order.py`:
 
 ## Operation Architecture
 
-```
+```text
 Development: AI agents (Devin / Claude Code / Gemini) for dev & review
   |
 Deploy: Docker image on Mac mini
