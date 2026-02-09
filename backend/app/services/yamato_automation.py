@@ -316,14 +316,13 @@ async def _toggle_notification(page: "Page", email: str) -> None:
     """Check the delivery notification checkbox and fill the email field."""
     notify_label = page.get_by_text("お届け予定をお知らせ")
     if await notify_label.count() > 0:
-        checkbox = page.locator('input[type="checkbox"]').filter(has=notify_label)
+        checkbox = notify_label.locator("xpath=ancestor::label//input[@type='checkbox']")
+        if await checkbox.count() == 0:
+            checkbox = notify_label.locator("xpath=preceding-sibling::input[@type='checkbox'] | following-sibling::input[@type='checkbox']")
         if await checkbox.count() > 0:
             if not await checkbox.first.is_checked():
                 await notify_label.first.click()
                 await page.wait_for_timeout(TIMEOUT_INPUT_MS)
-        else:
-            await notify_label.first.click()
-            await page.wait_for_timeout(TIMEOUT_INPUT_MS)
 
     email_input = page.locator('input[type="email"]')
     if await email_input.count() == 0:
@@ -367,6 +366,8 @@ async def _select_sender_from_address_book(page: "Page", settings: Settings) -> 
                 break
             elif match_count > 1:
                 logger.warning("Partial match '%s' is ambiguous (%d results), skipping", part, match_count)
+        else:
+            logger.error("Failed to select sender '%s' from address book - no match found", sender_name)
 
 
 async def _confirm_sender_info(page: "Page") -> None:
@@ -398,7 +399,7 @@ async def _fill_delivery_datetime(page: "Page", order: ShopifyOrder) -> None:
     try:
         delivery_dt = datetime.strptime(order.delivery_date, "%Y%m%d")
     except ValueError:
-        logger.error("Invalid delivery_date format '%s' for order %s", order.delivery_date, order.order_number)
+        logger.exception("Invalid delivery_date format '%s' for order %s", order.delivery_date, order.order_number)
         next_btn = page.locator("a#next")
         if await next_btn.count() > 0:
             await next_btn.first.click()
@@ -435,6 +436,8 @@ async def _fill_delivery_datetime(page: "Page", order: ShopifyOrder) -> None:
                         await time_select.select_option(value=order.delivery_time)
                         await page.wait_for_timeout(TIMEOUT_INPUT_MS)
                         break
+                    else:
+                        continue
                 else:
                     break
 
@@ -448,7 +451,12 @@ async def _fill_delivery_datetime(page: "Page", order: ShopifyOrder) -> None:
 
 async def _save_draft(page: "Page") -> None:
     """Save the shipment as a draft on the confirmation page."""
-    await _click_if_visible(page, "保存して別の荷物を送る", required=False)
+    btn = page.get_by_text("保存して別の荷物を送る")
+    if await btn.count() > 0:
+        await btn.first.click()
+        await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
+    else:
+        logger.warning("Save draft button not found - draft may not be saved")
     await page.wait_for_timeout(TIMEOUT_DIALOG_MS)
 
 
