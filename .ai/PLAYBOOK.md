@@ -91,7 +91,7 @@ Before creating a PR, verify:
 - [ ] Docstrings on public functions
 - [ ] PII masking in any new log outputs
 - [ ] No circular imports introduced (check `.ai/CONTEXT.md` dependency graph)
-- [ ] New environment variables added to `.env.example` and `.ai/CONTEXT.md`
+- [ ] New environment variables added to `.env.example`, `.ai/CONTEXT.md`, and `docker-compose.yml`
 - [ ] Any new tips added to `.ai/TIPS.md` with appropriate tags
 - [ ] `.ai/STATUS.md` updated with progress
 - [ ] Anti-patterns checklist reviewed (see above)
@@ -104,7 +104,7 @@ Before creating a PR, verify:
 | Shopify data fetching | `backend/app/services/shopify_service.py` |
 | Data models | `backend/app/models/order.py` |
 | API endpoints | `backend/app/routers/` |
-| Configuration | `backend/app/config.py` + `.env.example` |
+| Configuration | `backend/app/config.py` + `.env.example` + `docker-compose.yml` |
 | CLI commands | `backend/app/cli.py` |
 | Docker setup | `Dockerfile` + `docker-compose.yml` |
 | Frontend UI | `frontend/src/` |
@@ -135,6 +135,34 @@ This `.ai/` directory is designed to be agent-agnostic. If you're using a differ
 - **Cursor / Copilot:** Point your project rules or `.cursorrules` to read `.ai/CONTEXT.md` on session start.
 - **Any agent:** The tag system in TIPS.md enables targeted retrieval. Search for specific tags (e.g., `yamato`, `selector`) to find relevant tips quickly.
 
+## .ai/ Documentation Maintenance Protocol
+
+This `.ai/` directory is only useful if it stays in sync with reality.
+The goal is **骨太な方針（core decisions）を正確に保つ** - not to update on every small change.
+
+### When to Update Each File
+
+| File | Update trigger | Examples |
+|------|---------------|----------|
+| `CONTEXT.md` | Architecture or core decisions change | New service added, tech stack changed, new API endpoint, env var added, import structure changed |
+| `STATUS.md` | Every PR (always) | Task completed, new task discovered, priority changed, phase transition |
+| `TIPS.md` | New discovery during development | Selector found, Yamato behavior observed, gotcha encountered |
+| `PLAYBOOK.md` | Workflow or rules change | New anti-pattern discovered, new task type needed, tooling changed |
+
+### What NOT to Update
+
+- Don't update CONTEXT.md for bug fixes or minor refactors
+- Don't update PLAYBOOK.md for one-off workarounds
+- Don't rewrite TIPS.md entries - only append new ones
+
+### Owner Decision Changes
+
+When the project owner communicates a change in direction (e.g., new priority, dropped feature, different deployment target):
+
+1. Update `STATUS.md` priorities and **Why** explanations to reflect the new direction
+2. If the change affects architecture (e.g., "we're switching from Mac mini to cloud"), update `CONTEXT.md`
+3. Add a dated tip to `TIPS.md` documenting the decision change for future context
+
 ## After Completing Work
 
 1. Update `.ai/STATUS.md`:
@@ -142,4 +170,5 @@ This `.ai/` directory is designed to be agent-agnostic. If you're using a differ
    - Add any new discovered tasks to "Next TODO" with a **Why** explanation
    - Update the "Last Updated" date
 2. Append any new discoveries to `.ai/TIPS.md` with appropriate tags
-3. Create a PR with clear description of changes
+3. If you changed architecture, env vars, or core decisions, update `.ai/CONTEXT.md`
+4. Create a PR with clear description of changes
