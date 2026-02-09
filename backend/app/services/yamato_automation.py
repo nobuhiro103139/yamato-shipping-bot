@@ -1,9 +1,10 @@
 import os
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from app.config import Settings, get_settings
-from app.models.order import ShopifyOrder, ShippingResult, ShippingStatus
+from app.models.order import PackageSize, ShopifyOrder, ShippingResult, ShippingStatus
 
 if TYPE_CHECKING:
     from playwright.async_api import Page
@@ -17,6 +18,8 @@ TIMEOUT_PAGE_LOAD_MS = 2000
 TIMEOUT_NAVIGATION_MS = 1000
 TIMEOUT_POSTAL_LOOKUP_MS = 3000
 TIMEOUT_INPUT_MS = 500
+TIMEOUT_DROPDOWN_UPDATE_MS = 2000
+TIMEOUT_DIALOG_MS = 3000
 SLOW_MO_MS = 500
 PRODUCT_NAME_MAX_LENGTH = 17
 
@@ -30,6 +33,14 @@ DEVICE_CONFIG: dict[str, object] = {
     "device_scale_factor": 3,
     "is_mobile": True,
     "has_touch": True,
+}
+
+PACKAGE_SIZE_LABELS: dict[PackageSize, str] = {
+    PackageSize.COMPACT: "コンパクト",
+    PackageSize.S: "Ｓ",
+    PackageSize.M: "Ｍ",
+    PackageSize.L: "Ｌ",
+    PackageSize.LL: "ＬＬ",
 }
 
 YAMATO_SELECTORS = {
@@ -58,6 +69,9 @@ YAMATO_SELECTORS = {
     "sender_address3opt": 'input[name="viwb3130ActionBean.address3opt"]',
     "sender_address4": 'input[name="viwb3130ActionBean.address4"]',
     "sender_phone": 'input[name="viwb3130ActionBean.phoneNumber"]',
+    "shipping_date": 'select[name="viwb4100ActionBean.dateToShip"]',
+    "delivery_date": 'select[name="viwb4100ActionBean.dateToReceive"]',
+    "delivery_time": 'select[name="viwb4100ActionBean.timeToReceive"]',
 }
 
 
@@ -148,24 +162,29 @@ async def _run_yamato_automation(
             storage_state=auth_path,
         )
         page = await context.new_page()
+        page.on("dialog", lambda dialog: dialog.accept())
 
         try:
             await page.goto(YAMATO_SEND_URL, wait_until="domcontentloaded")
             await page.wait_for_timeout(TIMEOUT_PAGE_LOAD_MS)
 
             await _navigate_to_package_settings(page)
-
             await _fill_package_settings(page, order)
+            await page.wait_for_timeout(TIMEOUT_DIALOG_MS)
 
             await _select_direct_address_input(page)
-
             await _fill_recipient_info(page, order)
 
-            await _fill_sender_info(page, settings)
+            await _select_sender_from_address_book(page, settings)
+            await _confirm_sender_info(page)
+
+            await _select_shipping_location(page)
+            await _fill_delivery_datetime(page, order)
+
+            await _save_draft(page)
 
             screenshot_path = str(QR_CODE_DIR / f"{order.order_number}_confirmation.png")
             await page.screenshot(path=screenshot_path, full_page=True)
-
             await context.storage_state(path=auth_path)
 
             return ShippingResult(
@@ -193,11 +212,12 @@ async def _navigate_to_package_settings(page: "Page") -> None:
 
 async def _fill_package_settings(page: "Page", order: ShopifyOrder) -> None:
     """Fill the package settings form (size, product name, handling, confirmation)."""
-    size_value = order.package_size.value
-    size_radio = page.locator(f'{YAMATO_SELECTORS["size_radio"]}[value="{size_value}"]')
-    if await size_radio.count() > 0:
-        await size_radio.first.evaluate("el => el.parentElement.querySelector('span').click()")
-        await page.wait_for_timeout(TIMEOUT_INPUT_MS)
+    size_label = PACKAGE_SIZE_LABELS.get(order.package_size)
+    if size_label:
+        size_span = page.get_by_text(size_label, exact=False)
+        if await size_span.count() > 0:
+            await size_span.first.click()
+            await page.wait_for_timeout(TIMEOUT_INPUT_MS)
 
     product_names = ", ".join(item.title for item in order.items)
     item_name_input = page.locator(YAMATO_SELECTORS["item_name"])
@@ -207,8 +227,12 @@ async def _fill_package_settings(page: "Page", order: ShopifyOrder) -> None:
 
     handling_01 = page.locator(f'{YAMATO_SELECTORS["handling_checkbox"]}[value="01"]')
     if await handling_01.count() > 0:
-        await handling_01.first.evaluate("el => el.parentElement.querySelector('span').click()")
-        await page.wait_for_timeout(TIMEOUT_INPUT_MS)
+        is_checked = await handling_01.first.is_checked()
+        if not is_checked:
+            await handling_01.first.evaluate(
+                "el => el.parentElement.querySelector('span').click()"
+            )
+            await page.wait_for_timeout(TIMEOUT_INPUT_MS)
 
     not_prohibited = page.locator(YAMATO_SELECTORS["not_prohibited"])
     if await not_prohibited.count() > 0:
@@ -229,7 +253,7 @@ async def _select_direct_address_input(page: "Page") -> None:
 
 
 async def _fill_recipient_info(page: "Page", order: ShopifyOrder) -> None:
-    """Fill the recipient form on the Yamato Viwb3040 page."""
+    """Fill the recipient form including notification and address book settings."""
     addr = order.shipping_address
 
     await _fill_input(page, YAMATO_SELECTORS["recipient_last_name"], addr.last_name)
@@ -244,14 +268,33 @@ async def _fill_recipient_info(page: "Page", order: ShopifyOrder) -> None:
         await search_btn.first.click()
         await page.wait_for_timeout(TIMEOUT_POSTAL_LOOKUP_MS)
 
-    await _fill_input(page, YAMATO_SELECTORS["recipient_address3"], addr.address1)
+    if addr.chome:
+        chome_option = page.get_by_text(f"{addr.chome}丁目")
+        if await chome_option.count() > 0:
+            await chome_option.first.click()
+            await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
 
-    if addr.address2:
+    if addr.banchi:
+        await _fill_input(page, YAMATO_SELECTORS["recipient_address3"], addr.banchi)
+    elif addr.address1:
+        await _fill_input(page, YAMATO_SELECTORS["recipient_address3"], addr.address1)
+
+    if addr.go:
+        await _fill_input(page, YAMATO_SELECTORS["recipient_address3opt"], addr.go)
+
+    if addr.building:
+        await _fill_input(page, YAMATO_SELECTORS["recipient_address4"], addr.building)
+    elif addr.address2:
         await _fill_input(page, YAMATO_SELECTORS["recipient_address4"], addr.address2)
 
-    phone = addr.phone.replace("-", "")
+    phone = addr.phone.replace("+81 ", "0").replace("+81", "0").replace("-", "")
     if phone:
         await _fill_input(page, YAMATO_SELECTORS["recipient_phone"], phone)
+
+    if order.customer_email:
+        await _toggle_notification(page, order.customer_email)
+
+    await _uncheck_address_book(page)
 
     next_btn = page.locator(YAMATO_SELECTORS["next_recipient"])
     await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
@@ -262,34 +305,128 @@ async def _fill_recipient_info(page: "Page", order: ShopifyOrder) -> None:
             await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
 
 
-async def _fill_sender_info(page: "Page", settings: Settings) -> None:
-    """Fill the sender form if the page is displayed."""
-    if settings.sender_name:
-        parts = settings.sender_name.split(maxsplit=1)
-        sender_last = parts[0]
-        sender_first = parts[1] if len(parts) > 1 else ""
-        await _fill_input(page, YAMATO_SELECTORS["sender_last_name"], sender_last)
-        if sender_first:
-            await _fill_input(page, YAMATO_SELECTORS["sender_first_name"], sender_first)
+async def _toggle_notification(page: "Page", email: str) -> None:
+    """Check the delivery notification checkbox and fill the email field."""
+    notify_label = page.get_by_text("お届け予定をお知らせ")
+    if await notify_label.count() > 0:
+        await notify_label.first.click()
+        await page.wait_for_timeout(TIMEOUT_INPUT_MS)
 
-    if settings.sender_postal_code:
-        postal = settings.sender_postal_code.replace("-", "")
-        await _fill_input(page, YAMATO_SELECTORS["sender_zip"], postal)
+    email_input = page.locator('input[type="email"]')
+    if await email_input.count() == 0:
+        email_input = page.locator('input[name*="mail" i]')
+    if await email_input.count() > 0:
+        await email_input.first.fill(email)
+        await page.wait_for_timeout(TIMEOUT_INPUT_MS)
 
-        search_btn = page.locator(YAMATO_SELECTORS["sender_address_search_btn"])
-        if await search_btn.count() > 0:
-            await search_btn.first.click()
-            await page.wait_for_timeout(TIMEOUT_POSTAL_LOOKUP_MS)
 
-    if settings.sender_address1:
-        await _fill_input(page, YAMATO_SELECTORS["sender_address3"], settings.sender_address1)
+async def _uncheck_address_book(page: "Page") -> None:
+    """Uncheck the address book registration checkbox."""
+    address_book_label = page.get_by_text("アドレス帳へ登録")
+    if await address_book_label.count() > 0:
+        checkbox = address_book_label.locator("xpath=ancestor::label//input[@type='checkbox']")
+        if await checkbox.count() > 0:
+            is_checked = await checkbox.first.is_checked()
+            if is_checked:
+                await address_book_label.first.click()
+                await page.wait_for_timeout(TIMEOUT_INPUT_MS)
+                return
+        await address_book_label.first.click()
+        await page.wait_for_timeout(TIMEOUT_INPUT_MS)
 
-    if settings.sender_address2:
-        await _fill_input(page, YAMATO_SELECTORS["sender_address4"], settings.sender_address2)
 
-    if settings.sender_phone:
-        phone = settings.sender_phone.replace("-", "")
-        await _fill_input(page, YAMATO_SELECTORS["sender_phone"], phone)
+async def _select_sender_from_address_book(page: "Page", settings: Settings) -> None:
+    """Select sender from address book instead of manual input."""
+    await _click_if_visible(page, "アドレス帳から選択", required=False)
+    await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
+
+    sender_name = settings.sender_name or "フツテック"
+    sender_entry = page.get_by_text(sender_name, exact=False)
+    if await sender_entry.count() > 0:
+        await sender_entry.first.click()
+        await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
+    else:
+        parts = sender_name.split()
+        for part in parts:
+            entry = page.get_by_text(part, exact=False)
+            if await entry.count() > 0:
+                await entry.first.click()
+                await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
+                break
+
+
+async def _confirm_sender_info(page: "Page") -> None:
+    """Click next on the pre-filled sender info page."""
+    next_btn = page.locator("a#next")
+    if await next_btn.count() > 0:
+        is_disabled = await next_btn.first.get_attribute("disabled")
+        if not is_disabled:
+            await next_btn.first.click()
+            await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
+
+
+async def _select_shipping_location(page: "Page") -> None:
+    """Select shipping location as nearest to sender address."""
+    await _click_if_visible(page, "近くから発送", required=False)
+    if await page.get_by_text("近くから発送").count() == 0:
+        await _click_if_visible(page, "ご依頼主住所", required=False)
+
+
+async def _fill_delivery_datetime(page: "Page", order: ShopifyOrder) -> None:
+    """Set shipping date, delivery date, and time slot with fallback logic."""
+    if not order.delivery_date:
+        next_btn = page.locator("a#next")
+        if await next_btn.count() > 0:
+            await next_btn.first.click()
+            await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
+        return
+
+    delivery_dt = datetime.strptime(order.delivery_date, "%Y%m%d")
+    ship_dates = [
+        (delivery_dt - timedelta(days=1)).strftime("%Y%m%d"),
+        (delivery_dt - timedelta(days=2)).strftime("%Y%m%d"),
+    ]
+
+    shipping_select = page.locator(YAMATO_SELECTORS["shipping_date"])
+    delivery_select = page.locator(YAMATO_SELECTORS["delivery_date"])
+    time_select = page.locator(YAMATO_SELECTORS["delivery_time"])
+
+    for ship_date in ship_dates:
+        option = shipping_select.locator(f'option[value="{ship_date}"]')
+        if await option.count() > 0:
+            await shipping_select.select_option(value=ship_date)
+            await page.wait_for_timeout(TIMEOUT_DROPDOWN_UPDATE_MS)
+
+            delivery_option = delivery_select.locator(
+                f'option[value="{order.delivery_date}"]'
+            )
+            if await delivery_option.count() > 0:
+                await delivery_select.select_option(value=order.delivery_date)
+                await page.wait_for_timeout(TIMEOUT_DROPDOWN_UPDATE_MS)
+
+                if order.delivery_time and order.delivery_time != "0":
+                    time_option = time_select.locator(
+                        f'option[value="{order.delivery_time}"]'
+                    )
+                    if await time_option.count() > 0:
+                        await time_select.select_option(value=order.delivery_time)
+                        await page.wait_for_timeout(TIMEOUT_INPUT_MS)
+                        break
+                else:
+                    break
+
+    next_btn = page.locator("a#next")
+    if await next_btn.count() > 0:
+        is_disabled = await next_btn.first.get_attribute("disabled")
+        if not is_disabled:
+            await next_btn.first.click()
+            await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
+
+
+async def _save_draft(page: "Page") -> None:
+    """Save the shipment as a draft on the confirmation page."""
+    await _click_if_visible(page, "保存して別の荷物を送る", required=False)
+    await page.wait_for_timeout(TIMEOUT_DIALOG_MS)
 
 
 async def _click_if_visible(page: "Page", text: str, *, required: bool = False) -> None:

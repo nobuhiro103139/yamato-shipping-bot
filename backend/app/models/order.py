@@ -5,10 +5,22 @@ from enum import Enum
 class PackageSize(str, Enum):
     """Yamato package size categories."""
 
+    COMPACT = "compact"
     S = "S"
     M = "M"
     L = "L"
     LL = "LL"
+
+
+class DeliveryTimeSlot(str, Enum):
+    """Yamato delivery time slot codes matching form select values."""
+
+    NONE = "0"
+    MORNING = "1"
+    PM_14_16 = "3"
+    PM_16_18 = "4"
+    PM_18_20 = "5"
+    PM_19_21 = "7"
 
 
 class ShippingAddress(BaseModel):
@@ -17,11 +29,15 @@ class ShippingAddress(BaseModel):
     last_name: str
     first_name: str = ""
     postal_code: str
-    province: str
-    city: str
-    address1: str
+    province: str = ""
+    city: str = ""
+    address1: str = ""
     address2: str = ""
     phone: str = ""
+    chome: str = ""
+    banchi: str = ""
+    go: str = ""
+    building: str = ""
 
 
 class OrderItem(BaseModel):
@@ -39,6 +55,9 @@ class ShopifyOrder(BaseModel):
     shipping_address: ShippingAddress
     items: list[OrderItem]
     package_size: PackageSize = PackageSize.M
+    delivery_date: str = ""
+    delivery_time: str = "0"
+    customer_email: str = ""
 
 
 class ShippingStatus(str, Enum):
