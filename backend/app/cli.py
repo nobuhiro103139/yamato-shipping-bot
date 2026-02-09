@@ -1,6 +1,5 @@
 import asyncio
 import sys
-import json
 from datetime import datetime
 
 from app.config import get_settings
@@ -17,7 +16,11 @@ async def run_shipment_batch():
         print("Set SHOPIFY_STORE_URL and SHOPIFY_ACCESS_TOKEN in .env or environment.")
         return 1
 
-    orders = await fetch_unfulfilled_orders()
+    try:
+        orders = await fetch_unfulfilled_orders()
+    except Exception as exc:
+        print(f"ERROR: Failed to fetch orders: {exc}")
+        return 1
     if not orders:
         print("No unfulfilled orders found. Nothing to process.")
         return 0
@@ -26,9 +29,11 @@ async def run_shipment_batch():
     results = []
 
     for order in orders:
+        addr = order.shipping_address
         print(f"\nProcessing order {order.order_number}...")
-        print(f"  Recipient: {order.shipping_address.name}")
-        print(f"  Address: {order.shipping_address.province}{order.shipping_address.city}{order.shipping_address.address1}")
+        if addr:
+            print(f"  Recipient: {addr.name[:1]}***")
+            print(f"  Address: {addr.province}{addr.city}***")
         print(f"  Package size: {order.package_size.value}")
 
         result = await process_shipment(order)
@@ -52,10 +57,15 @@ async def check_orders():
         print("ERROR: Shopify credentials not configured.")
         return 1
 
-    orders = await fetch_unfulfilled_orders()
+    try:
+        orders = await fetch_unfulfilled_orders()
+    except Exception as exc:
+        print(f"ERROR: Failed to fetch orders: {exc}")
+        return 1
     print(f"Unfulfilled orders: {len(orders)}")
     for order in orders:
-        print(f"  {order.order_number}: {order.shipping_address.name} ({order.package_size.value})")
+        name = order.shipping_address.name[:1] + "***" if order.shipping_address else "N/A"
+        print(f"  {order.order_number}: {name} ({order.package_size.value})")
     return 0
 
 
@@ -79,7 +89,7 @@ def main():
         print("  ship   - Process all unfulfilled orders (default)")
         print("  check  - List unfulfilled orders without processing")
         print("  health - Check configuration status")
-        code = 0
+        code = 2
 
     sys.exit(code)
 

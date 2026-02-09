@@ -208,13 +208,11 @@ async def _fill_recipient_info(page, order: ShopifyOrder):
 
 
 async def _fill_sender_info(page, settings):
-    if not settings.sender_name:
-        return
-
-    sender_name_input = page.locator('input[name*="sender_name"], input[name*="senderName"], input[placeholder*="依頼主"]')
-    if await sender_name_input.count() > 0:
-        await sender_name_input.first.fill(settings.sender_name)
-        await page.wait_for_timeout(500)
+    if settings.sender_name:
+        sender_name_input = page.locator('input[name*="sender_name"], input[name*="senderName"], input[placeholder*="依頼主"]')
+        if await sender_name_input.count() > 0:
+            await sender_name_input.first.fill(settings.sender_name)
+            await page.wait_for_timeout(500)
 
     if settings.sender_postal_code:
         sender_postal = page.locator('input[name*="sender_postal"], input[name*="senderZip"]')

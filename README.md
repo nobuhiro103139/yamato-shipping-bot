@@ -157,7 +157,7 @@ curl -X POST http://localhost:8000/api/shipping/init-auth
 
 ## 運用アーキテクチャ
 
-```
+```text
 開発: Devin で開発・テスト
   ↓
 デプロイ: Docker イメージを Mac mini に配置
