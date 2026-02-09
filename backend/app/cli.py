@@ -7,11 +7,12 @@ from app.services.shopify_service import fetch_unfulfilled_orders
 from app.services.yamato_automation import process_shipment
 
 
-async def run_shipment_batch():
+async def run_shipment_batch() -> int:
+    """Fetch unfulfilled Shopify orders and process each through Yamato automation."""
     settings = get_settings()
     print(f"[{datetime.now().isoformat()}] Starting shipment batch...")
 
-    if not settings.shopify_store_url or not settings.shopify_access_token:
+    if not settings.shopify_configured:
         print("ERROR: Shopify credentials not configured.")
         print("Set SHOPIFY_STORE_URL and SHOPIFY_ACCESS_TOKEN in .env or environment.")
         return 1
@@ -51,9 +52,10 @@ async def run_shipment_batch():
     return 0 if failed == 0 else 1
 
 
-async def check_orders():
+async def check_orders() -> int:
+    """List unfulfilled Shopify orders without processing them."""
     settings = get_settings()
-    if not settings.shopify_store_url or not settings.shopify_access_token:
+    if not settings.shopify_configured:
         print("ERROR: Shopify credentials not configured.")
         return 1
 
@@ -69,7 +71,8 @@ async def check_orders():
     return 0
 
 
-def main():
+def main() -> None:
+    """CLI entrypoint dispatching to ship, check, or health subcommands."""
     command = sys.argv[1] if len(sys.argv) > 1 else "ship"
 
     if command == "ship":
