@@ -139,12 +139,65 @@ If no category fits, create a new `## Category` section.
 ### [2026-02-09] Docker Architecture
 **Tags:** `docker`, `infrastructure`
 - Two services: `backend` (API server) and `runner` (CLI batch)
-- Shared volumes: `yamato-data` (auth.json) and `yamato-qrcodes` (QR images)
+- Shared volumes: `yamato-data` (auth.json) and `yamato-results` (processing results)
 - Non-root user in container for security
-- Playwright Chromium is bundled in the Docker image
+- Browser Use + Playwright Chromium are bundled in the Docker image
 
 ### [2026-02-09] Mac mini Deployment
 **Tags:** `deployment`, `cron`, `production`
 - Target production environment is a Mac mini
-- cron job at 10:00 AM daily: `docker compose run --rm runner ship`
+- cron job at 9:00 AM daily: `docker compose run --rm runner ship`
 - Logs to `/var/log/yamato-bot.log`
+- **HEADLESS_BROWSER=false** is required for Mac mini (Browser Use needs headful mode)
+
+## Browser Use / LLM
+
+### [2026-02-09] Browser Use Architecture Decision
+**Tags:** `browser-use`, `architecture`, `critical`
+- Browser Use chosen over Playwright direct and OpenClaw
+- Reason: Yamato blocks headless Playwright (anti-bot detection)
+- Reason: OpenClaw is overkill for "1 day / 1 batch" use case
+- Browser Use uses LLM to drive browser via natural language task prompts
+- More resilient to HTML structure changes (no CSS selector dependency)
+- Trade-off: slower (LLM inference) and costs API fees per shipment
+
+### [2026-02-09] Browser Use Task Prompt Design
+**Tags:** `browser-use`, `prompt`, `yamato`
+- Task prompt is written in Japanese (matches Yamato's UI language)
+- Prompt includes step-by-step numbered instructions
+- Each form field is explicitly named with expected value
+- Includes fallback instructions (e.g., "if login page appears, login with...")
+- Prompt template is in `yamato_agent.py::_build_task_prompt()`
+
+### [2026-02-09] Browser Use Mobile Emulation
+**Tags:** `browser-use`, `mobile`, `emulation`
+- iPhone emulation: UA string, 390x844 viewport, 3x device scale factor
+- `wait_between_actions=1.0` to mimic human interaction speed
+- `allowed_domains` restricts navigation to `*.kuronekoyamato.co.jp`
+- `storage_state` loads auth.json if it exists for session persistence
+
+### [2026-02-09] LLM Provider Configuration
+**Tags:** `llm`, `config`, `browser-use`
+- Default: OpenAI GPT-4o (best balance of speed and accuracy for form filling)
+- Alternative: Anthropic Claude (set `LLM_PROVIDER=anthropic`)
+- API key is required: `LLM_API_KEY` in .env
+- langchain abstractions used for provider flexibility
+- browser-use and langchain-openai are required deps; langchain-anthropic is optional
+
+### [2026-02-09] Playwright Anti-Bot Detection (Historical)
+**Tags:** `playwright`, `anti-bot`, `yamato`, `historical`
+- Headless Playwright: Yamato redirects to login page (session invalidated)
+- Headful Playwright in Devin: Display conflict (system constraint)
+- CDP connection (connect_over_cdp): shared_worker assertion error
+- Chrome Cookie DB extraction: encrypted_value column, value column empty
+- **Conclusion:** Direct Playwright automation in cloud/CI environments is not viable for Yamato
+- Browser Use with headful mode on Mac mini is the solution
+
+### [2026-02-09] Shipment Data Format (shipments.json)
+**Tags:** `data`, `shipment`, `json`
+- Array of Shipment objects
+- Required fields: `recipient_last_name`, `recipient_postal_code`, `recipient_phone`
+- Optional: `recipient_first_name`, `recipient_email`, `recipient_building`, etc.
+- `package_size`: "compact" (default), "S", "M", "L", "LL"
+- `delivery_time`: free-text (e.g., "18:00~20:00") - agent interprets from dropdown
+- See `backend/shipments.example.json` for sample format

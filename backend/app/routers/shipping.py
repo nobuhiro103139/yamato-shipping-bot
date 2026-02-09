@@ -1,22 +1,15 @@
 from fastapi import APIRouter, HTTPException
-from app.services.yamato_automation import process_shipment, save_auth_state
-from app.models.order import ShopifyOrder, ShippingResult
+from app.services.yamato_agent import process_shipment
+from app.models.order import Shipment, ShippingResult
 
 router = APIRouter(prefix="/api/shipping", tags=["shipping"])
 
 
 @router.post("/process", response_model=ShippingResult)
-async def process_order_shipment(order: ShopifyOrder) -> ShippingResult:
-    """Process a single order through Yamato shipment automation."""
+async def process_shipment_endpoint(shipment: Shipment) -> ShippingResult:
+    """Process a single shipment through Browser Use agent."""
     try:
-        result = await process_shipment(order)
+        result = await process_shipment(shipment)
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
-
-
-@router.post("/init-auth")
-async def initialize_auth() -> dict[str, object]:
-    """Open a browser for manual Kuroneko Members login."""
-    result = await save_auth_state()
-    return result

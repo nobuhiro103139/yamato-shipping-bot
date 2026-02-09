@@ -1,81 +1,87 @@
 # Development Status
 
-> Current phase: **Phase 1 - PoC (Proof of Concept)**
+> Current phase: **Phase 2 - Browser Use Integration**
 > Last updated: 2026-02-09
 
 ## Completed
 
 - [x] Shopify GraphQL API service for fetching unfulfilled orders
-- [x] Playwright-based Yamato form automation skeleton
+- [x] Playwright-based Yamato form automation skeleton (PR #1, #2, #6)
 - [x] Docker setup (non-root user, Playwright Chromium bundled)
 - [x] CLI (ship/check/health commands)
 - [x] PII masking in log outputs
 - [x] CORS configuration (env-based)
 - [x] Type hints and docstrings
-- [x] PR #1 (Docker + CLI) merged
-- [x] PR #2 (Code quality improvements) merged
 - [x] `.ai/` directory with project context, tips, playbook, and status
+- [x] Delivery date/time, notification, address book selection (PR #6)
+- [x] Manual shipment creation via Devin browser (3 shipments: 小島, 舩岡, 渡辺)
+- [x] Playwright anti-bot detection analysis (headless/headful/CDP all blocked)
+- [x] **Browser Use refactoring** - `yamato_agent.py` with LLM-driven automation
+- [x] **Shipment model** - `Shipment` class for shipments.json input
+- [x] **CLI refactoring** - ship (JSON), ship-shopify (Shopify API), check, health
+- [x] **Config update** - LLM provider/model/API key settings
+- [x] **Router update** - `/api/shipping/process` accepts Shipment JSON
+- [x] **Dependencies** - browser-use, langchain-openai, langchain-anthropic
+- [x] **Infrastructure** - Dockerfile, docker-compose.yml updated
 
 ## Next TODO (Priority Order)
 
 ### High Priority
 
-- [ ] **Yamato form real-site selector verification**
-  - **Why:** PoC の成功に必須。セレクタが動かなければ自動化は何も始まらない
-  - All CSS selectors in `yamato_automation.py` are best-guess estimates
-  - Need to use `playwright codegen --device="iPhone 13"` on the real Yamato site
-  - Selectors to verify: postal code input, name fields, address fields, phone input, submit buttons
+- [ ] **Mac mini deployment + Browser Use E2E test**
+  - **Why:** Browser Use はheadfulモードが前提。Mac miniで実際にヤマトサイトを操作して動作検証が必要
+  - Docker image deployment to Mac mini
+  - HEADLESS_BROWSER=false で実行
+  - shipments.json に1件のテストデータを入れて `python -m app.cli ship` を実行
+  - LLM_API_KEY (OpenAI) を設定して動作確認
 
-- [ ] **Shopify API real-environment test**
-  - **Why:** データ取得が正しく動くことの検証なしに、下流の自動入力は開発できない
-  - Set `SHOPIFY_STORE_URL` and `SHOPIFY_ACCESS_TOKEN` with real credentials
-  - Run `python -m app.cli check` to verify order fetching works
-  - Validate the GraphQL query response structure
-  - Note: Currently using API version `2025-10` (supported until Oct 2026). Latest is `2026-01`.
-
-- [ ] **Kuroneko Members login flow**
-  - **Why:** 認証なしではヤマトサイトにアクセスできず、セレクタ検証もできない
-  - Test `save_auth_state()` for initial manual login -> auth.json save
-  - Verify session persistence across automation runs
-  - Handle session expiration gracefully
+- [ ] **auth.json セッション管理の自動化**
+  - **Why:** Browser Use Agent が自動ログインするが、セッション期限切れ時の再認証フローを検証する必要がある
+  - Agent が自動でログインできるか検証
+  - セッション永続化の信頼性確認
+  - 期限切れ時のgraceful fallback
 
 ### Medium Priority
 
-- [ ] **Payment step implementation**
-  - **Why:** 現在は決済前のスクリーンショットまで。完全自動化にはこのステップが必要
-  - Currently stops at pre-payment screenshot
-  - Need to implement: payment button click -> QR code capture
-  - Requires real Yamato site testing
+- [ ] **LLM プロンプトチューニング**
+  - **Why:** Browser Use の精度はタスクプロンプトの品質に依存する。実サイトでの検証後に改善
+  - 実際のヤマトサイトでプロンプトを検証
+  - ステップ数・所要時間の最適化
+  - エラー時のリトライロジック改善
+
+- [ ] **Slack/Discord 通知**
+  - **Why:** バッチ処理の結果を自動通知できると運用が楽になる
+  - 処理完了/失敗時の通知
+  - Webhook ベースで実装
 
 - [ ] **Frontend (React) completion**
   - **Why:** オペレーターが手動で確認・実行できる UI がないと運用に乗らない
-  - Basic components exist but are not connected to backend
-  - Need: order list display, ship button, status updates, QR code viewer
+  - Basic components exist but not connected to backend
+  - Need: shipment list, ship button, status updates
 
 ### Low Priority
 
-- [ ] **Mac mini deployment**
-  - **Why:** 最終的な本番環境。PoC 完了後に着手
-  - Docker image deployment to Mac mini
-  - cron job setup for daily 10:00 AM execution
-  - Log rotation and monitoring
+- [ ] **Automated tests**
+  - **Why:** リグレッション防止。本番安定稼働後に着手
+  - Shipment model validation tests
+  - CLI integration tests (mock Browser Use)
 
-- [ ] **Error handling improvements**
-  - **Why:** 本番運用の安定性向上。PoC 段階では後回し可
-  - Retry logic for transient failures
-  - Better error messages for common failure modes
-  - Email/Slack notification on failure
+- [ ] **Shopify → shipments.json 自動変換**
+  - **Why:** 現在は ship-shopify コマンドで直接処理するが、JSON経由のパイプラインも有用
+  - 別エージェントが Shopify → JSON 変換を担当する想定
 
 ## Known Issues
 
-- CSS selectors in `yamato_automation.py` are unverified (may not match actual Yamato HTML)
-- Frontend is scaffolded but not functional
+- Browser Use は未テスト（Mac mini headful環境が必要）
+- yamato_automation.py (legacy) はアンチボット検知により Devin 環境では動作不可
+- Frontend は scaffolded but not functional
 - No automated tests exist yet
-- Shopify API version `2025-10` is one version behind latest (`2026-01`), but still supported until Oct 2026
+- Shopify API version `2025-10` は `2026-01` の1つ前だが Oct 2026 までサポート
 
 ## Phase Roadmap
 
-1. **Phase 1 (Current):** PoC - Verify automation works end-to-end with real Yamato site
-2. **Phase 2:** Production - Complete payment flow, error handling, monitoring
-3. **Phase 3:** Dashboard - Finish React frontend, connect to backend APIs
-4. **Phase 4:** Deployment - Mac mini setup, cron scheduling, operational monitoring
+1. **Phase 1:** PoC - Playwright direct automation (completed, blocked by anti-bot)
+2. **Phase 2 (Current):** Browser Use Integration - LLM-driven automation
+3. **Phase 3:** Production - Mac mini deployment, E2E testing, prompt tuning
+4. **Phase 4:** Dashboard - React frontend, Slack notifications
+5. **Phase 5:** Pipeline - Shopify → JSON → Browser Use fully automated

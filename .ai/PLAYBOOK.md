@@ -15,35 +15,46 @@
 ```bash
 cd backend
 poetry install
-poetry run playwright install chromium
-cp .env.example .env  # Edit with credentials
+playwright install chromium
+cp .env.example .env  # Edit: LLM_API_KEY, KURONEKO_LOGIN_ID, KURONEKO_PASSWORD
+cp shipments.example.json shipments.json  # Edit with shipment data
 ```
 
 ## Anti-Patterns (禁止事項)
 
 These are hard rules. Violating them will break the system.
 
-| Rule | Reason |
-|------|--------|
-| `models/order.py` から `config.py` をインポートしない | Circular import でアプリが起動しなくなる |
-| ログに個人情報をマスクなしで出力しない | PII 漏洩。名前は頭文字+`***`、住所は都道府県+市区町村まで |
-| 本番の Yamato サイトで深夜にテスト実行しない | メンテナンス時間帯でフォームが応答しない |
-| `git push --force` しない | 他のコミットが消える |
-| `.env` や `auth.json` をコミットしない | クレデンシャル漏洩 |
-| Playwright セレクタを検証なしで本番投入しない | Yamato の HTML は予告なく変わる |
-| `CORS_ALLOWED_ORIGINS` に `*` を設定しない | セキュリティリスク |
+| Rule | Severity | Reason |
+|------|----------|--------|
+| `models/order.py` から `config.py` をインポートしない | CRITICAL | Circular import でアプリが起動しなくなる |
+| ログに個人情報をマスクなしで出力しない | HIGH | PII 漏洩。名前は頭文字+`***`、住所は都道府県+市区町村まで |
+| 本番の Yamato サイトで深夜にテスト実行しない | MEDIUM | メンテナンス時間帯でフォームが応答しない |
+| `git push --force` しない | CRITICAL | 他のコミットが消える |
+| `.env` や `auth.json` をコミットしない | CRITICAL | クレデンシャル漏洩 |
+| LLM_API_KEY をログやコードに直接書かない | HIGH | APIキー漏洩 |
+| `CORS_ALLOWED_ORIGINS` に `*` を設定しない | MEDIUM | セキュリティリスク |
+| Browser Use のタスクプロンプトに実際のパスワードをハードコードしない | HIGH | プロンプトはログに残る可能性がある |
 
 ## Common Tasks
 
-### Task: Fix Failing Automation Selectors
+### Task: Add/Modify Shipment Processing
 
-1. Check `.ai/TIPS.md` (tag: `selector`) for known selector issues
-2. Navigate to `backend/app/services/yamato_automation.py`
-3. Identify the failing selector
-4. Use `playwright codegen --device="iPhone 13" https://sp-send.kuronekoyamato.co.jp/` to find correct selectors
-5. Update the selector in `yamato_automation.py`
-6. Add a tip entry to `.ai/TIPS.md` documenting the correct selector
-7. Update `.ai/STATUS.md` if this resolves a known issue
+1. Read `.ai/CONTEXT.md` for import dependency graph
+2. Shipment data model: `backend/app/models/order.py` → `Shipment` class
+3. Browser Use agent logic: `backend/app/services/yamato_agent.py`
+4. Task prompt builder: `_build_task_prompt()` in `yamato_agent.py`
+5. Test with `python -m app.cli check` (dry run) before processing
+6. Update `.ai/STATUS.md` with progress
+
+### Task: Tune Browser Use Prompt
+
+1. Check `.ai/TIPS.md` (tag: `browser-use`, `prompt`) for known prompt issues
+2. Edit `_build_task_prompt()` in `backend/app/services/yamato_agent.py`
+3. Keep instructions in Japanese (matches Yamato UI)
+4. Use numbered steps for clarity
+5. Include explicit field names and values
+6. Test on Mac mini with `HEADLESS_BROWSER=false`
+7. Add discoveries to `.ai/TIPS.md`
 
 ### Task: Add New Feature
 
@@ -59,28 +70,29 @@ These are hard rules. Violating them will break the system.
 6. Update `.ai/STATUS.md` with progress
 7. Add any discoveries to `.ai/TIPS.md`
 
+### Task: Debug Browser Use Agent
+
+1. Set `HEADLESS_BROWSER=false` (required for Browser Use on Mac mini)
+2. Check `.ai/TIPS.md` (tags: `browser-use`, `yamato`) for known behaviors
+3. Run with a single shipment in shipments.json first
+4. Check `results/` directory for screenshots
+5. Review LLM logs for step-by-step agent reasoning
+6. If prompt needs adjustment, see "Tune Browser Use Prompt" task above
+
 ### Task: Debug Shopify Integration
 
 1. Check `SHOPIFY_STORE_URL` and `SHOPIFY_ACCESS_TOKEN` are set
 2. Run `poetry run python -m app.cli health` to verify config
-3. Run `poetry run python -m app.cli check` to test order fetching
+3. Run `poetry run python -m app.cli ship-shopify` to test (or `check` for dry run)
 4. Check `backend/app/services/shopify_service.py` for the GraphQL query
 5. Verify API version matches Shopify's current supported versions (see TIPS.md tag: `shopify`, `version`)
-
-### Task: Debug Yamato Automation
-
-1. Set `HEADLESS_BROWSER=false` for visible browser
-2. Check `.ai/TIPS.md` (tags: `yamato`, `playwright`) for known behaviors
-3. Run with a single test order first
-4. Check `qr_codes/` directory for screenshots (confirmation or error)
-5. If selectors fail, refer to "Fix Failing Automation Selectors" task above
 
 ### Task: Update Docker Configuration
 
 1. Read `Dockerfile` and `docker-compose.yml`
 2. The `backend` service runs the API server (port 8000)
-3. The `runner` service runs CLI commands
-4. Both share `yamato-data` and `yamato-qrcodes` volumes
+3. The `runner` service runs CLI commands with shipments.json mounted
+4. Both share `yamato-data` and `yamato-results` volumes
 5. Test with `docker compose build` before pushing
 
 ## Code Quality Checklist
@@ -100,7 +112,8 @@ Before creating a PR, verify:
 
 | What to change | Where |
 |----------------|-------|
-| Yamato form automation | `backend/app/services/yamato_automation.py` |
+| Browser Use automation | `backend/app/services/yamato_agent.py` |
+| Legacy Playwright automation | `backend/app/services/yamato_automation.py` |
 | Shopify data fetching | `backend/app/services/shopify_service.py` |
 | Data models | `backend/app/models/order.py` |
 | API endpoints | `backend/app/routers/` |
@@ -111,6 +124,22 @@ Before creating a PR, verify:
 | AI context | `.ai/CONTEXT.md` |
 | Development tips | `.ai/TIPS.md` |
 | Development status | `.ai/STATUS.md` |
+
+## Self-Feedback Loop
+
+AIが同じミスを繰り返さないための仕組み：
+
+1. AIがミスを犯したら → Anti-Patterns テーブルに新ルールを追加
+2. 新しい知見を発見したら → TIPS.md に追記
+3. ワークフローに改善があったら → Task Workflows を更新
+
+## Custom Skills
+
+| Skill | Description | When to use |
+|-------|-------------|------------|
+| /validate | Code quality checklist verification | Before creating PR |
+| /check | `python -m app.cli check` dry run | Before processing shipments |
+| /health | `python -m app.cli health` config check | When debugging config issues |
 
 ## Tips Accumulation Protocol
 
@@ -133,7 +162,7 @@ This `.ai/` directory is designed to be agent-agnostic. If you're using a differ
 - **Claude Code:** Use `.ai/CONTEXT.md` as your primary knowledge source. You can reference it in your system prompt or CLAUDE.md.
 - **Gemini:** The structured Markdown format is optimized for LLM parsing. Each file is self-contained.
 - **Cursor / Copilot:** Point your project rules or `.cursorrules` to read `.ai/CONTEXT.md` on session start.
-- **Any agent:** The tag system in TIPS.md enables targeted retrieval. Search for specific tags (e.g., `yamato`, `selector`) to find relevant tips quickly.
+- **Any agent:** The tag system in TIPS.md enables targeted retrieval. Search for specific tags (e.g., `browser-use`, `yamato`) to find relevant tips quickly.
 
 ## .ai/ Documentation Maintenance Protocol
 
@@ -146,7 +175,7 @@ The goal is **骨太な方針（core decisions）を正確に保つ** - not to u
 |------|---------------|----------|
 | `CONTEXT.md` | Architecture or core decisions change | New service added, tech stack changed, new API endpoint, env var added, import structure changed |
 | `STATUS.md` | Every PR (always) | Task completed, new task discovered, priority changed, phase transition |
-| `TIPS.md` | New discovery during development | Selector found, Yamato behavior observed, gotcha encountered |
+| `TIPS.md` | New discovery during development | Browser Use behavior, Yamato site change, LLM prompt discovery |
 | `PLAYBOOK.md` | Workflow or rules change | New anti-pattern discovered, new task type needed, tooling changed |
 
 ### What NOT to Update

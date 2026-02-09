@@ -1,168 +1,189 @@
 # Yamato Shipping Bot
 
-TechRental の配送自動化システム。Shopify の注文データからヤマト運輸「スマホで送る」のフォームに自動入力し、発送処理を自動化します。
+TechRental の配送自動化システム。[Browser Use](https://github.com/browser-use/browser-use)（AI エージェント型ブラウザ自動化）でヤマト運輸「スマホで送る」のフォームに自動入力し、発送処理を自動化します。
+
+## アーキテクチャ
+
+```text
+[別エージェント/手動] → shipments.json に保存
+         ↓
+  cron: 毎日AM 9:00
+         ↓
+  python -m app.cli ship
+         ↓
+  Browser Use Agent が shipments.json を読む
+         ↓
+  1件ずつヤマト「スマホで送る」に入力（LLM駆動）
+         ↓
+  完了ログ出力
+```
 
 ## 技術スタック
 
 | レイヤー | 技術 |
 |---------|------|
-| ブラウザ自動操作 | Playwright (Python) - モバイルエミュレーション |
-| データ取得 | Shopify Admin API (GraphQL) |
+| ブラウザ自動操作 | Browser Use (AI Agent) + Playwright |
+| LLM | OpenAI GPT-4o (default) / Anthropic Claude |
+| データ入力 | shipments.json（整形済みデータ） |
+| データ取得（任意） | Shopify Admin API (GraphQL) |
 | バックエンド | FastAPI |
-| フロントエンド | React (Vite + TypeScript + Tailwind CSS) |
-| セッション管理 | Playwright storageState |
+| セッション管理 | Playwright storageState (auth.json) |
 | コンテナ | Docker / Docker Compose |
 
 ## プロジェクト構成
 
 ```
 yamato-shipping-bot/
-├── backend/           # FastAPI バックエンド
+├── backend/
 │   ├── app/
-│   │   ├── main.py           # FastAPI エントリーポイント
-│   │   ├── cli.py            # CLI ランナー（バッチ処理用）
-│   │   ├── config.py         # 環境設定
-│   │   ├── models/           # Pydantic モデル
-│   │   ├── routers/          # API ルーター
-│   │   └── services/         # ビジネスロジック
-│   │       ├── shopify_service.py      # Shopify API 連携
-│   │       └── yamato_automation.py    # Playwright 自動操作
+│   │   ├── main.py               # FastAPI エントリーポイント
+│   │   ├── cli.py                # CLI（ship / ship-shopify / check / health）
+│   │   ├── config.py             # 環境設定（LLM・ヤマト・Shopify）
+│   │   ├── models/
+│   │   │   └── order.py          # Shipment, ShopifyOrder, ShippingResult
+│   │   ├── routers/
+│   │   │   ├── shipping.py       # POST /api/shipping/process
+│   │   │   └── orders.py         # GET /api/orders/unfulfilled
+│   │   └── services/
+│   │       ├── yamato_agent.py   # Browser Use Agent（メイン自動化）
+│   │       ├── yamato_automation.py  # (legacy) Playwright直接操作
+│   │       └── shopify_service.py    # Shopify API連携
+│   ├── shipments.example.json    # 入力データのサンプル
 │   ├── .env.example
 │   └── pyproject.toml
-├── frontend/          # React ダッシュボード
-│   ├── src/
-│   │   ├── App.tsx           # メインコンポーネント
-│   │   ├── api.ts            # API クライアント
-│   │   ├── types.ts          # 型定義
-│   │   └── components/       # UI コンポーネント
-│   ├── .env.example
-│   └── package.json
-├── Dockerfile         # Docker イメージ定義
-├── docker-compose.yml # Docker Compose 設定
-├── .dockerignore
+├── .ai/                   # AI エージェント向けコンテキスト
+├── Dockerfile
+├── docker-compose.yml
 └── README.md
 ```
 
-## クイックスタート（Docker）
+## クイックスタート
 
 ### 1. 環境変数の設定
 
 ```bash
 cp backend/.env.example backend/.env
-# backend/.env を編集して Shopify API キー等を設定
+# LLM_API_KEY, KURONEKO_LOGIN_ID, KURONEKO_PASSWORD を設定
 ```
 
-### 2. Docker で起動
+### 2. shipments.json を準備
 
 ```bash
-# API サーバー起動
-docker compose up -d backend
-
-# バッチ処理（全未発送注文を処理）
-docker compose run --rm runner ship
-
-# 未発送注文の確認のみ
-docker compose run --rm runner check
-
-# 設定確認
-docker compose run --rm runner health
+cp backend/shipments.example.json backend/shipments.json
+# 発送データを編集
 ```
 
-### 3. Mac mini での cron 設定例
+`shipments.json` のフォーマット:
 
-```bash
-# 毎日10時に自動発送処理
-0 10 * * * cd /path/to/yamato-shipping-bot && docker compose run --rm runner ship >> /var/log/yamato-bot.log 2>&1
+```json
+[
+  {
+    "recipient_last_name": "山田",
+    "recipient_first_name": "太郎",
+    "recipient_postal_code": "150-0001",
+    "recipient_phone": "09012345678",
+    "recipient_email": "taro@example.com",
+    "recipient_chome": "1",
+    "recipient_banchi": "2-3",
+    "recipient_building": "マンション101",
+    "product_name": "スマートフォン",
+    "package_size": "compact",
+    "shipping_date": "2026-02-15",
+    "delivery_date": "2026-02-16",
+    "delivery_time": "18:00~20:00"
+  }
+]
 ```
 
-## ローカル開発
-
-### バックエンド
+### 3. 実行
 
 ```bash
 cd backend
-cp .env.example .env
-
 poetry install
 playwright install chromium
 
-# 開発サーバー起動
-poetry run fastapi dev app/main.py
-
-# CLI で直接実行
+# shipments.json から発送処理
 poetry run python -m app.cli ship
+
+# Shopify連携モード（要Shopify設定）
+poetry run python -m app.cli ship-shopify
+
+# 保留中の発送確認
 poetry run python -m app.cli check
+
+# 設定確認
+poetry run python -m app.cli health
 ```
 
-### フロントエンド
+### 4. Docker で実行
 
 ```bash
-cd frontend
-cp .env.example .env
-npm install
-npm run dev
+docker compose run --rm runner ship
+docker compose run --rm runner check
+docker compose run --rm runner health
 ```
 
-### 初回認証（クロネコメンバーズ）
-
-バックエンド起動後、以下のエンドポイントを呼び出してブラウザを起動し、手動でログインします：
+### 5. cron 設定（Mac mini）
 
 ```bash
-curl -X POST http://localhost:8000/api/shipping/init-auth
+0 9 * * * cd /path/to/yamato-shipping-bot && docker compose run --rm runner ship >> /var/log/yamato-bot.log 2>&1
 ```
 
-ログイン後、セッション情報が `auth.json` に保存され、以降は自動ログインが可能になります。
+## 初回認証
+
+Browser Use Agent は初回実行時にクロネコメンバーズへ自動ログインします。
+認証情報は `auth.json` に保存され、以降はセッション再利用します。
+
+セッション切れの場合は `auth.json` を削除して再実行してください。
+
+## CLI コマンド
+
+| コマンド | 説明 |
+|---------|------|
+| `python -m app.cli ship` | shipments.json から発送処理（デフォルト） |
+| `python -m app.cli ship-shopify` | Shopify API から取得して発送処理 |
+| `python -m app.cli check` | 保留中の発送データ一覧 |
+| `python -m app.cli health` | 設定状態の確認 |
 
 ## API エンドポイント
 
 | メソッド | パス | 説明 |
 |---------|------|------|
 | GET | `/healthz` | ヘルスチェック |
-| GET | `/api/orders/unfulfilled` | 未発送注文一覧取得 |
-| POST | `/api/shipping/process` | 発送処理実行 |
-| POST | `/api/shipping/init-auth` | クロネコメンバーズ認証初期化 |
-
-## CLI コマンド
-
-| コマンド | 説明 |
-|---------|------|
-| `python -m app.cli ship` | 全未発送注文を自動発送処理 |
-| `python -m app.cli check` | 未発送注文の一覧表示（処理しない） |
-| `python -m app.cli health` | 設定状態の確認 |
-
-## 処理フロー
-
-1. Shopify Admin API (GraphQL) で未発送注文を取得
-2. ダッシュボードで注文一覧を表示（またはCLIで直接実行）
-3. 「発送する」ボタンクリック（またはCLIの `ship` コマンド）
-4. Playwright がモバイルエミュレーションでヤマト「スマホで送る」にアクセス
-5. フォームに自動入力（お届け先、依頼主、品名、サイズ等）
-6. 決済実行 → QR コード取得
+| GET | `/api/orders/unfulfilled` | 未発送注文一覧（Shopify） |
+| POST | `/api/shipping/process` | 発送処理実行（Shipment JSON） |
 
 ## 環境変数
 
-| 変数名 | 説明 |
-|--------|------|
-| `SHOPIFY_STORE_URL` | Shopify ストア URL |
-| `SHOPIFY_ACCESS_TOKEN` | Shopify Admin API アクセストークン |
-| `KURONEKO_LOGIN_ID` | クロネコメンバーズ ID |
-| `KURONEKO_PASSWORD` | クロネコメンバーズ パスワード |
-| `SENDER_NAME` | 依頼主の氏名 |
-| `SENDER_POSTAL_CODE` | 依頼主の郵便番号 |
-| `SENDER_ADDRESS1` | 依頼主の住所 |
-| `SENDER_ADDRESS2` | 依頼主の建物名等 |
-| `SENDER_PHONE` | 依頼主の電話番号 |
-| `HEADLESS_BROWSER` | ヘッドレスモード (true/false) |
-| `AUTH_STATE_PATH` | 認証状態ファイルのパス |
+| 変数名 | 必須 | 説明 |
+|--------|------|------|
+| `LLM_PROVIDER` | | LLM プロバイダー（openai / anthropic） |
+| `LLM_MODEL` | | モデル名（gpt-4o） |
+| `LLM_API_KEY` | Yes | LLM API キー |
+| `KURONEKO_LOGIN_ID` | Yes | クロネコメンバーズ ID |
+| `KURONEKO_PASSWORD` | Yes | クロネコメンバーズ パスワード |
+| `SENDER_NAME` | | 依頼主名（アドレス帳検索用） |
+| `SHIPMENTS_PATH` | | shipments.json のパス |
+| `HEADLESS_BROWSER` | | ヘッドレスモード（Mac mini: false 推奨） |
+| `AUTH_STATE_PATH` | | 認証状態ファイルのパス |
+| `SHOPIFY_STORE_URL` | | Shopify ストア URL（ship-shopify用） |
+| `SHOPIFY_ACCESS_TOKEN` | | Shopify API トークン（ship-shopify用） |
 
-## 運用アーキテクチャ
+## Browser Use について
 
-```text
-開発: Devin で開発・テスト
-  ↓
-デプロイ: Docker イメージを Mac mini に配置
-  ↓
-実行: cron で定期実行 or 手動 docker compose run
-  ↓
-監視: ログ確認、エラー通知
-```
+[Browser Use](https://github.com/browser-use/browser-use) は AI エージェントがブラウザを操作するフレームワークです。
+
+- LLM が自然言語のタスク指示を理解してフォームを操作
+- HTML構造の変更に強い（セレクタ依存しない）
+- ヤマトのアンチボット検知を回避しやすい（headful + 通常のブラウザ操作パターン）
+- モバイルエミュレーション対応（iPhone UA, 390x844 viewport）
+
+### Playwright 直接操作との比較
+
+| 観点 | Browser Use (AI) | Playwright 直接 |
+|------|-----------------|----------------|
+| セレクタ変更への耐性 | 高い | 低い（都度修正） |
+| アンチボット検知 | 回避しやすい | 検知されやすい |
+| 実行速度 | 遅い（LLM推論あり） | 速い |
+| コスト | LLM API料金 | 無料 |
+| デバッグ | ログ・スクショ | ステップ単位 |

@@ -12,12 +12,13 @@ COPY backend/pyproject.toml backend/poetry.lock* ./
 RUN poetry config virtualenvs.create false \
     && poetry install --no-interaction --no-ansi --no-root
 
-RUN python -m playwright install --with-deps chromium
+RUN python -c "from browser_use import Browser" 2>/dev/null || true \
+    && playwright install --with-deps chromium
 
 COPY backend/ .
 
 RUN adduser --disabled-password --gecos "" appuser \
-    && mkdir -p /app/qr_codes /app/data \
+    && mkdir -p /app/results /app/data \
     && chown -R appuser:appuser /app
 
 USER appuser

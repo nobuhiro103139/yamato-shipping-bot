@@ -12,7 +12,7 @@ services:
       - AUTH_STATE_PATH=/app/data/auth.json
     volumes:
       - yamato-data:/app/data
-      - yamato-qrcodes:/app/qr_codes
+      - yamato-results:/app/results
     restart: unless-stopped
 
   runner:
@@ -27,10 +27,11 @@ services:
       - AUTH_STATE_PATH=/app/data/auth.json
     volumes:
       - yamato-data:/app/data
-      - yamato-qrcodes:/app/qr_codes
+      - yamato-results:/app/results
+      - ./backend/shipments.json:/app/shipments.json:ro
     profiles:
       - cli
 
 volumes:
   yamato-data:
-  yamato-qrcodes:
+  yamato-results:

@@ -1,0 +1,17 @@
+[
+  {
+    "recipient_last_name": "山田",
+    "recipient_first_name": "太郎",
+    "recipient_postal_code": "150-0001",
+    "recipient_phone": "09012345678",
+    "recipient_email": "taro@example.com",
+    "recipient_chome": "1",
+    "recipient_banchi": "2-3",
+    "recipient_building": "サンプルマンション101",
+    "product_name": "スマートフォン",
+    "package_size": "compact",
+    "shipping_date": "2026-02-15",
+    "delivery_date": "2026-02-16",
+    "delivery_time": "18:00~20:00"
+  }
+]

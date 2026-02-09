@@ -1,5 +1,6 @@
-from pydantic import BaseModel
 from enum import Enum
+
+from pydantic import BaseModel, computed_field
 
 
 class PackageSize(str, Enum):
@@ -77,3 +78,50 @@ class ShippingResult(BaseModel):
     status: ShippingStatus
     qr_code_path: str = ""
     error_message: str = ""
+
+
+PACKAGE_SIZE_LABELS: dict[PackageSize, str] = {
+    PackageSize.COMPACT: "コンパクト",
+    PackageSize.S: "Ｓ",
+    PackageSize.M: "Ｍ",
+    PackageSize.L: "Ｌ",
+    PackageSize.LL: "ＬＬ",
+}
+
+
+class Shipment(BaseModel):
+    """A single shipment to process via Browser Use agent.
+
+    This model represents the data from shipments.json,
+    prepared by an upstream agent (e.g. Shopify integration).
+    """
+
+    recipient_last_name: str
+    recipient_first_name: str = ""
+    recipient_postal_code: str
+    recipient_phone: str
+    recipient_email: str = ""
+    recipient_chome: str = ""
+    recipient_banchi: str = ""
+    recipient_go: str = ""
+    recipient_building: str = ""
+    product_name: str = "スマートフォン"
+    package_size: PackageSize = PackageSize.COMPACT
+    shipping_date: str = ""
+    delivery_date: str = ""
+    delivery_time: str = ""
+    order_id: str = ""
+
+    @computed_field
+    @property
+    def identifier(self) -> str:
+        """Unique identifier for logging (order_id or recipient name)."""
+        if self.order_id:
+            return self.order_id
+        return f"{self.recipient_last_name}_{self.recipient_first_name}"
+
+    @computed_field
+    @property
+    def package_size_label(self) -> str:
+        """Japanese label for the package size."""
+        return PACKAGE_SIZE_LABELS.get(self.package_size, "コンパクト")

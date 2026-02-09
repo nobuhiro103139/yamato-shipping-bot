@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     headless_browser: bool = False
     auth_state_path: str = "auth.json"
     cors_allowed_origins: str = "http://localhost:5173,http://localhost:3000"
+    llm_provider: str = "openai"
+    llm_model: str = "gpt-4o"
+    llm_api_key: str = ""
+    shipments_path: str = "shipments.json"
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
