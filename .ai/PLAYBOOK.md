@@ -131,7 +131,7 @@ When you discover something new during development:
 This `.ai/` directory is designed to be agent-agnostic. If you're using a different AI tool:
 
 - **Claude Code:** Use `.ai/CONTEXT.md` as your primary knowledge source. You can reference it in your system prompt or CLAUDE.md.
-- **Gemini:** The structured markdown format is optimized for LLM parsing. Each file is self-contained.
+- **Gemini:** The structured Markdown format is optimized for LLM parsing. Each file is self-contained.
 - **Cursor / Copilot:** Point your project rules or `.cursorrules` to read `.ai/CONTEXT.md` on session start.
 - **Any agent:** The tag system in TIPS.md enables targeted retrieval. Search for specific tags (e.g., `yamato`, `selector`) to find relevant tips quickly.
 

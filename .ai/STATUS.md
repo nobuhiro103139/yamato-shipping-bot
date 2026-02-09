@@ -8,7 +8,7 @@
 - [x] Shopify GraphQL API service for fetching unfulfilled orders
 - [x] Playwright-based Yamato form automation skeleton
 - [x] Docker setup (non-root user, Playwright Chromium bundled)
-- [x] CLI interface (ship/check/health commands)
+- [x] CLI (ship/check/health commands)
 - [x] PII masking in log outputs
 - [x] CORS configuration (env-based)
 - [x] Type hints and docstrings
