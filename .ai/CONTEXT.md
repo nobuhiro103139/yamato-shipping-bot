@@ -32,6 +32,11 @@
 ```text
 yamato-shipping-bot/
 ├── .ai/                         # AI agent context (you are here)
+│   ├── README.md                # Directory guide and reading order
+│   ├── CONTEXT.md               # Project overview (this file)
+│   ├── STATUS.md                # Development status and TODOs
+│   ├── TIPS.md                  # Accumulated development tips
+│   └── PLAYBOOK.md              # Agent playbook and workflows
 ├── backend/
 │   ├── app/
 │   │   ├── main.py              # FastAPI entry point (CORS configurable)

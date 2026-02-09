@@ -34,6 +34,7 @@ If no category fits, create a new `## Category` section.
 
 ### [2026-02-09] CSS Selectors are Estimates
 **Tags:** `yamato`, `playwright`, `selector`, `risk`
+**Last verified:** Not yet — selectors are best-guess estimates
 - All selectors in `yamato_automation.py` (e.g., `input[name*="postal"]`) are best-guess
 - Must verify with `playwright codegen --device="iPhone 13"` on the real site
 - Yamato may update their HTML without notice - selectors may break
