@@ -64,7 +64,7 @@ async def check_orders():
         return 1
     print(f"Unfulfilled orders: {len(orders)}")
     for order in orders:
-        name = order.shipping_address.name[:1] + "***" if order.shipping_address else "N/A"
+        name = (order.shipping_address.name[:1] + "***") if order.shipping_address else "N/A"
         print(f"  {order.order_number}: {name} ({order.package_size.value})")
     return 0
 
