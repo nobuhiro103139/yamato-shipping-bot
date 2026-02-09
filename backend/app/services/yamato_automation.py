@@ -175,10 +175,10 @@ async def _run_yamato_automation(
                 qr_code_path=screenshot_path,
             )
 
-        except Exception:
+        except Exception as e:
             error_screenshot = str(QR_CODE_DIR / f"{order.order_number}_error.png")
             await page.screenshot(path=error_screenshot, full_page=True)
-            raise
+            raise e
 
         finally:
             await browser.close()
@@ -186,9 +186,9 @@ async def _run_yamato_automation(
 
 async def _navigate_to_package_settings(page: "Page") -> None:
     """Navigate from the top page through service/payment/count selection."""
-    await _click_if_visible(page, "通常の荷物を送る")
-    await _click_if_visible(page, "発払い")
-    await _click_if_visible(page, "１個")
+    await _click_if_visible(page, "通常の荷物を送る", required=True)
+    await _click_if_visible(page, "発払い", required=True)
+    await _click_if_visible(page, "１個", required=True)
 
 
 async def _fill_package_settings(page: "Page", order: ShopifyOrder) -> None:
@@ -292,12 +292,14 @@ async def _fill_sender_info(page: "Page", settings: Settings) -> None:
         await _fill_input(page, YAMATO_SELECTORS["sender_phone"], phone)
 
 
-async def _click_if_visible(page: "Page", text: str) -> None:
+async def _click_if_visible(page: "Page", text: str, *, required: bool = False) -> None:
     """Click the first element matching *text* if it exists on the page."""
     btn = page.get_by_text(text)
     if await btn.count() > 0:
         await btn.first.click()
         await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
+    elif required:
+        raise RuntimeError(f"Required button not found: '{text}')")
 
 
 async def _fill_input(page: "Page", selector: str, value: str, timeout_ms: int = TIMEOUT_INPUT_MS) -> None:
