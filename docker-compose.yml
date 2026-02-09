@@ -6,10 +6,12 @@ services:
     ports:
       - "8000:8000"
     env_file:
-      - ./backend/.env
+      - path: ./backend/.env
+        required: false
     environment:
       - HEADLESS_BROWSER=true
       - AUTH_STATE_PATH=/app/data/auth.json
+      - OP_SERVICE_ACCOUNT_TOKEN=${OP_SERVICE_ACCOUNT_TOKEN:-}
     volumes:
       - yamato-data:/app/data
       - yamato-qrcodes:/app/qr_codes
@@ -19,12 +21,14 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    entrypoint: ["python", "-m", "app.cli"]
+    command: ["python", "-m", "app.cli"]
     env_file:
-      - ./backend/.env
+      - path: ./backend/.env
+        required: false
     environment:
       - HEADLESS_BROWSER=true
       - AUTH_STATE_PATH=/app/data/auth.json
+      - OP_SERVICE_ACCOUNT_TOKEN=${OP_SERVICE_ACCOUNT_TOKEN:-}
     volumes:
       - yamato-data:/app/data
       - yamato-qrcodes:/app/qr_codes

@@ -103,6 +103,25 @@ If no category fits, create a new `## Category` section.
 - `PRODUCT_NAME_MAX_LENGTH = 30` in `yamato_automation.py`
 - Concatenated item titles are truncated to fit
 
+## Secrets Management
+
+### [2026-02-09] 1Password CLI Integration
+**Tags:** `1password`, `secrets`, `op`, `docker`
+- Secrets are managed via 1Password `Dev` Vault using `op run`
+- `OP_SERVICE_ACCOUNT_TOKEN` env var enables automatic secret injection
+- Secret references are defined in `backend/.env.op` using `op://Dev/...` format
+- `scripts/entrypoint.sh` detects the token and wraps commands with `op run`
+- Falls back to `.env` file if `OP_SERVICE_ACCOUNT_TOKEN` is not set
+- 1Password items required: `Shopify`, `Kuroneko Members`, `Sender Info`
+
+### [2026-02-09] 1Password Vault Item Structure
+**Tags:** `1password`, `setup`
+- **Shopify**: `store-url`, `access-token`
+- **Kuroneko Members**: `username`, `password`
+- **Sender Info**: `name`, `postal-code`, `address1`, `address2`, `phone`
+- All items must be in the `Dev` vault
+- Field names must match exactly (used in `backend/.env.op` references)
+
 ## Docker / Deployment
 
 ### [2026-02-09] Docker Architecture
