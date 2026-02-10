@@ -19,8 +19,6 @@ class Settings(BaseSettings):
     sender_address2: str = ""
     sender_phone: str = ""
     default_package_size: str = "M"
-    headless_browser: bool = False
-    auth_state_path: str = "auth.json"
     cors_allowed_origins: str = "http://localhost:5173,http://localhost:3000"
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}

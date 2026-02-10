@@ -1,5 +1,4 @@
 import logging
-import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -17,12 +16,14 @@ QR_CODE_DIR.mkdir(exist_ok=True)
 
 YAMATO_SEND_URL = "https://sp-send.kuronekoyamato.co.jp/"
 
-TIMEOUT_PAGE_LOAD_MS = 2000
-TIMEOUT_NAVIGATION_MS = 1000
+TIMEOUT_PAGE_LOAD_MS = 3000
+TIMEOUT_NAVIGATION_MS = 3000
 TIMEOUT_POSTAL_LOOKUP_MS = 3000
 TIMEOUT_INPUT_MS = 500
 TIMEOUT_DROPDOWN_UPDATE_MS = 2000
 TIMEOUT_DIALOG_MS = 3000
+TIMEOUT_LOGIN_POLL_MS = 2000
+TIMEOUT_LOGIN_MAX_S = 60
 SLOW_MO_MS = 500
 PRODUCT_NAME_MAX_LENGTH = 17
 
@@ -38,36 +39,40 @@ DEVICE_CONFIG: dict[str, object] = {
     "has_touch": True,
 }
 
-PACKAGE_SIZE_LABELS: dict[PackageSize, str] = {
-    PackageSize.COMPACT: "コンパクト",
-    PackageSize.S: "Ｓ",
-    PackageSize.M: "Ｍ",
-    PackageSize.L: "Ｌ",
-    PackageSize.LL: "ＬＬ",
+PACKAGE_SIZE_TO_RADIO_VALUE: dict[PackageSize, str] = {
+    PackageSize.COMPACT: "C",
+    PackageSize.S: "S",
+    PackageSize.M: "M",
+    PackageSize.L: "L",
+    PackageSize.LL: "LL",
+}
+
+PACKAGE_COUNT_IDS: dict[int, str] = {
+    1: "one",
+    2: "two",
+    3: "three",
+    4: "four",
+    5: "five",
 }
 
 YAMATO_SELECTORS = {
-    "size_radio": 'input[name="viwb2050ActionBean.size"]',
+    "prepay_btn": "a#nextLeavePay",
     "item_name": 'input[name="viwb2050ActionBean.itemName"]',
+    "size_radio": 'input[name="viwb2050ActionBean.size"]',
     "handling_checkbox": 'input[name="handling"]',
     "not_prohibited": 'input[name="viwb2050ActionBean.notProhibited"]',
-    "next_baggage": 'a[data-action="Viwb2050Action_doNext.action"]',
     "recipient_last_name": 'input[name="viwb3040ActionBean.lastName"]',
     "recipient_first_name": 'input[name="viwb3040ActionBean.firstName"]',
     "recipient_zip": 'input[name="viwb3040ActionBean.zipCode"]',
     "address_search_btn": "button#btnSearch",
-    "recipient_address1": 'input[name="viwb3040ActionBean.address1"]',
-    "recipient_address2": 'textarea[name="viwb3040ActionBean.address2"]',
     "recipient_address3": 'input[name="viwb3040ActionBean.address3"]',
     "recipient_address3opt": 'input[name="viwb3040ActionBean.address3opt"]',
     "recipient_address4": 'input[name="viwb3040ActionBean.address4"]',
-    "recipient_company": 'input[name="viwb3040ActionBean.companyName"]',
     "recipient_phone": 'input[name="viwb3040ActionBean.phoneNumber"]',
-    "next_recipient": "a#next",
+    "next_btn": "a#next",
     "sender_last_name": 'input[name="viwb3130ActionBean.lastName"]',
     "sender_first_name": 'input[name="viwb3130ActionBean.firstName"]',
     "sender_zip": 'input[name="viwb3130ActionBean.zipCode"]',
-    "sender_address_search_btn": "button#btnSearch",
     "sender_address3": 'input[name="viwb3130ActionBean.address3"]',
     "sender_address3opt": 'input[name="viwb3130ActionBean.address3opt"]',
     "sender_address4": 'input[name="viwb3130ActionBean.address4"]',
@@ -75,6 +80,9 @@ YAMATO_SELECTORS = {
     "shipping_date": 'select[name="viwb4100ActionBean.dateToShip"]',
     "delivery_date": 'select[name="viwb4100ActionBean.dateToReceive"]',
     "delivery_time": 'select[name="viwb4100ActionBean.timeToReceive"]',
+    "login_form_id": "#login-form-id",
+    "login_form_password": "#login-form-password",
+    "login_form_submit": "#login-form-submit",
 }
 
 
@@ -86,14 +94,13 @@ async def save_auth_state() -> dict[str, object]:
     to persist the session state.
     """
     try:
-        from playwright.async_api import async_playwright
+        from playwright.async_api import async_playwright  # noqa: F401
     except ImportError:
         return {
             "success": False,
             "message": "Playwright is not installed. Run: poetry add playwright && playwright install chromium",
         }
 
-    settings = get_settings()
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=False)
         context = await browser.new_context(**DEVICE_CONFIG)
@@ -113,22 +120,21 @@ async def save_auth_state() -> dict[str, object]:
 async def process_shipment(order: ShopifyOrder) -> ShippingResult:
     """Automate the Yamato 'Send via Smartphone' flow for a single order.
 
-    Launches Playwright with mobile emulation, loads saved auth state,
+    Launches Playwright with Xvfb + headful mode, logs in fresh each time,
     and fills out the shipment form for the given order.
     """
     settings = get_settings()
-    auth_path = settings.auth_state_path
 
-    if not os.path.exists(auth_path):
+    if not settings.kuroneko_configured:
         return ShippingResult(
             order_id=order.order_id,
             order_number=order.order_number,
             status=ShippingStatus.FAILED,
-            error_message="Auth state not found. Please run initial login first.",
+            error_message="Kuroneko credentials not configured.",
         )
 
     try:
-        from playwright.async_api import async_playwright
+        from playwright.async_api import async_playwright  # noqa: F401
     except ImportError:
         return ShippingResult(
             order_id=order.order_id,
@@ -138,7 +144,7 @@ async def process_shipment(order: ShopifyOrder) -> ShippingResult:
         )
 
     try:
-        result = await _run_yamato_automation(order, settings, auth_path)
+        result = await _run_yamato_automation(order, settings)
         return result
     except Exception as e:
         return ShippingResult(
@@ -150,21 +156,27 @@ async def process_shipment(order: ShopifyOrder) -> ShippingResult:
 
 
 async def _run_yamato_automation(
-    order: ShopifyOrder, settings: Settings, auth_path: str
+    order: ShopifyOrder, settings: Settings
 ) -> ShippingResult:
-    """Run the full Yamato form automation flow inside a Playwright browser."""
+    """Run the full Yamato form automation flow inside a Playwright browser.
+
+    Uses headful mode with anti-bot measures. Logs in fresh each time
+    since auth.json session reuse does not work with Yamato.
+    """
     from playwright.async_api import async_playwright
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(
-            headless=settings.headless_browser,
+            headless=False,
             slow_mo=SLOW_MO_MS,
+            args=["--disable-blink-features=AutomationControlled"],
         )
-        context = await browser.new_context(
-            **DEVICE_CONFIG,
-            storage_state=auth_path,
-        )
+        context = await browser.new_context(**DEVICE_CONFIG)
         page = await context.new_page()
+        await page.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', { get: () => false });"
+        )
+
         async def _handle_dialog(dialog: "Dialog") -> None:
             logger.info("Dialog [%s]: %s", dialog.type, dialog.message)
             await dialog.accept()
@@ -175,9 +187,9 @@ async def _run_yamato_automation(
             await page.goto(YAMATO_SEND_URL, wait_until="domcontentloaded")
             await page.wait_for_timeout(TIMEOUT_PAGE_LOAD_MS)
 
-            await _navigate_to_package_settings(page)
+            await _login(page, settings)
+            await _navigate_to_package_settings(page, order)
             await _fill_package_settings(page, order)
-            await page.wait_for_timeout(TIMEOUT_DIALOG_MS)
 
             await _select_direct_address_input(page)
             await _fill_recipient_info(page, order)
@@ -192,7 +204,6 @@ async def _run_yamato_automation(
 
             screenshot_path = str(QR_CODE_DIR / f"{order.order_number}_confirmation.png")
             await page.screenshot(path=screenshot_path, full_page=True)
-            await context.storage_state(path=auth_path)
 
             return ShippingResult(
                 order_id=order.order_id,
@@ -210,21 +221,152 @@ async def _run_yamato_automation(
             await browser.close()
 
 
-async def _navigate_to_package_settings(page: "Page") -> None:
-    """Navigate from the top page through service/payment/count selection."""
-    await _click_if_visible(page, "通常の荷物を送る", required=True)
-    await _click_if_visible(page, "発払い", required=True)
-    await _click_if_visible(page, "１個", required=True)
+async def _login(page: "Page", settings: Settings) -> None:
+    """Login to Kuroneko Members via sp-send SSO flow.
+
+    Yamato does not support session reuse (auth.json). Every run must
+    login fresh. The flow is:
+    1. Click "ログインして利用する" on sp-send
+    2. Fill credentials on auth.kms page
+    3. Poll for redirect back to sp-send (up to 60s)
+    """
+    content = await page.content()
+    if "ログインして利用する" not in content:
+        logout_loc = page.locator("text=ログアウト")
+        if await logout_loc.count() > 0 and await logout_loc.first.is_visible():
+            logger.info("Already logged in")
+            return
+
+    login_btn = page.get_by_text("ログインして利用する", exact=False)
+    if await login_btn.count() > 0:
+        await login_btn.first.click()
+        await page.wait_for_timeout(5000)
+
+    if "auth.kms" not in page.url:
+        logger.warning("Expected auth.kms page, got: %s", page.url)
+        return
+
+    await page.locator(YAMATO_SELECTORS["login_form_id"]).fill(
+        settings.kuroneko_login_id
+    )
+    await page.locator(YAMATO_SELECTORS["login_form_password"]).fill(
+        settings.kuroneko_password
+    )
+    await page.locator(YAMATO_SELECTORS["login_form_submit"]).click()
+
+    max_polls = TIMEOUT_LOGIN_MAX_S * 1000 // TIMEOUT_LOGIN_POLL_MS
+    for i in range(max_polls):
+        await page.wait_for_timeout(TIMEOUT_LOGIN_POLL_MS)
+        url = page.url
+        if "sp-send" in url:
+            logger.info(
+                "Login redirect to sp-send after %ds",
+                (i + 1) * TIMEOUT_LOGIN_POLL_MS // 1000,
+            )
+            break
+        elif "member" in url:
+            logger.info("Redirected to member page, navigating to sp-send")
+            await page.goto(YAMATO_SEND_URL, wait_until="domcontentloaded")
+            await page.wait_for_timeout(TIMEOUT_PAGE_LOAD_MS)
+            break
+    else:
+        logger.warning("Login redirect timeout after %ds", TIMEOUT_LOGIN_MAX_S)
+        await page.goto(YAMATO_SEND_URL, wait_until="domcontentloaded")
+        await page.wait_for_timeout(TIMEOUT_PAGE_LOAD_MS)
+
+    content = await page.content()
+    logout_loc = page.locator("text=ログアウト")
+    is_logged_in = (
+        await logout_loc.count() > 0 and await logout_loc.first.is_visible()
+    )
+    still_has_login = "ログインして利用する" in content
+
+    if still_has_login and not is_logged_in:
+        logger.info("SSO retry: clicking login button again")
+        sso_btn = page.get_by_text("ログインして利用する", exact=False)
+        if await sso_btn.count() > 0:
+            await sso_btn.first.click()
+            await page.wait_for_timeout(8000)
+            if "auth.kms" in page.url:
+                for _ in range(15):
+                    await page.wait_for_timeout(TIMEOUT_LOGIN_POLL_MS)
+                    if "sp-send" in page.url:
+                        break
+                else:
+                    await page.goto(YAMATO_SEND_URL, wait_until="domcontentloaded")
+                    await page.wait_for_timeout(TIMEOUT_PAGE_LOAD_MS)
+
+    logout_loc = page.locator("text=ログアウト")
+    is_logged_in = (
+        await logout_loc.count() > 0 and await logout_loc.first.is_visible()
+    )
+    if not is_logged_in:
+        raise RuntimeError("Login failed: could not establish session on sp-send")
+
+
+async def _navigate_to_package_settings(page: "Page", order: ShopifyOrder) -> None:
+    """Navigate from top page through service/payment/count selection.
+
+    Uses verified selectors from E2E testing:
+    - "通常の荷物を送る": text click (role link)
+    - 発払い: a#nextLeavePay (image button, setAction JS)
+    - 個数: a#one / a#two etc. (link IDs)
+    """
+    normal = page.get_by_role("link", name="通常の荷物を送る")
+    if await normal.count() > 0:
+        await normal.first.click()
+    else:
+        await page.get_by_text("通常の荷物を送る").first.click()
+    await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
+    await _check_session_error(page)
+
+    prepay = page.locator(YAMATO_SELECTORS["prepay_btn"])
+    if await prepay.count() > 0:
+        await prepay.click()
+    else:
+        img = page.get_by_alt_text("発払いで荷物を送る")
+        if await img.count() > 0:
+            await img.first.click()
+        else:
+            raise RuntimeError("発払い button not found")
+    await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
+    await _check_session_error(page)
+
+    total_items = sum(item.quantity for item in order.items)
+    count = min(total_items, 5)
+    count_id = PACKAGE_COUNT_IDS.get(count, "one")
+    count_btn = page.locator(f"a#{count_id}")
+    if await count_btn.count() > 0:
+        await count_btn.click()
+    else:
+        raise RuntimeError(f"Package count button a#{count_id} not found")
+    await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
+    await _check_session_error(page)
 
 
 async def _fill_package_settings(page: "Page", order: ShopifyOrder) -> None:
-    """Fill the package settings form (size, product name, handling, confirmation)."""
-    size_label = PACKAGE_SIZE_LABELS.get(order.package_size)
-    if size_label:
-        size_span = page.get_by_text(size_label, exact=True)
-        if await size_span.count() > 0:
-            await size_span.first.click()
-            await page.wait_for_timeout(TIMEOUT_INPUT_MS)
+    """Fill the package settings form (size, product name, handling, confirmation).
+
+    Size radios and handling checkboxes are hidden (styled with CSS).
+    Must use JavaScript evaluate to select them.
+    """
+    radio_value = PACKAGE_SIZE_TO_RADIO_VALUE.get(order.package_size, "S")
+    await page.evaluate(
+        """(targetValue) => {
+            const radios = document.querySelectorAll('input[name="viwb2050ActionBean.size"]');
+            for (const r of radios) {
+                if (r.value === targetValue) {
+                    r.checked = true;
+                    r.dispatchEvent(new Event('change', {bubbles: true}));
+                    const lbl = r.closest('label');
+                    if (lbl) lbl.click();
+                    return;
+                }
+            }
+        }""",
+        radio_value,
+    )
+    await page.wait_for_timeout(TIMEOUT_INPUT_MS)
 
     product_names = ", ".join(item.title for item in order.items)
     item_name_input = page.locator(YAMATO_SELECTORS["item_name"])
@@ -232,31 +374,66 @@ async def _fill_package_settings(page: "Page", order: ShopifyOrder) -> None:
         await item_name_input.first.fill(product_names[:PRODUCT_NAME_MAX_LENGTH])
         await page.wait_for_timeout(TIMEOUT_INPUT_MS)
 
-    handling_01 = page.locator(f'{YAMATO_SELECTORS["handling_checkbox"]}[value="01"]')
-    if await handling_01.count() > 0:
-        is_checked = await handling_01.first.is_checked()
-        if not is_checked:
-            await handling_01.first.evaluate(
-                "el => el.parentElement.querySelector('span').click()"
-            )
-            await page.wait_for_timeout(TIMEOUT_INPUT_MS)
+    await page.evaluate("""() => {
+        const cb = document.querySelector('input[name="handling"][value="01"]');
+        if (cb && !cb.checked) {
+            cb.checked = true;
+            cb.dispatchEvent(new Event('change', {bubbles: true}));
+            const lbl = cb.closest('label');
+            if (lbl) lbl.click();
+        }
+    }""")
+    await page.wait_for_timeout(TIMEOUT_INPUT_MS)
 
-    not_prohibited = page.locator(YAMATO_SELECTORS["not_prohibited"])
-    if await not_prohibited.count() > 0:
-        is_checked = await not_prohibited.first.is_checked()
-        if not is_checked:
-            await not_prohibited.first.evaluate("el => el.parentElement.click()")
-            await page.wait_for_timeout(TIMEOUT_INPUT_MS)
+    await page.evaluate("""() => {
+        const cb = document.querySelector('input[name="viwb2050ActionBean.notProhibited"]');
+        if (cb && !cb.checked) {
+            cb.checked = true;
+            cb.dispatchEvent(new Event('change', {bubbles: true}));
+            const lbl = cb.closest('label');
+            if (lbl) lbl.click();
+        }
+    }""")
+    await page.wait_for_timeout(TIMEOUT_INPUT_MS)
 
-    next_btn = page.locator(YAMATO_SELECTORS["next_baggage"])
-    if await next_btn.count() > 0:
-        await next_btn.first.click()
-        await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
+    next_clicked = False
+    for sel in [
+        'a[data-action="Viwb2050Action_doNext.action"]',
+        'a[onclick*="Viwb2050Action_doNext"]',
+        "a#next",
+    ]:
+        loc = page.locator(sel)
+        if await loc.count() > 0:
+            await loc.first.click(force=True)
+            next_clicked = True
+            break
+
+    if not next_clicked:
+        for txt in ["荷物内容を入力してください", "次へ", "次へ進む"]:
+            btn = page.get_by_text(txt, exact=False)
+            if await btn.count() > 0:
+                await btn.first.click()
+                next_clicked = True
+                break
+
+    if not next_clicked:
+        await page.evaluate("""() => {
+            const links = document.querySelectorAll('a[onclick*="doNext"], a[onclick*="setAction"]');
+            for (const a of links) {
+                if (a.offsetParent !== null) { a.click(); return; }
+            }
+        }""")
+
+    await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
+    await page.wait_for_timeout(TIMEOUT_DIALOG_MS)
 
 
 async def _select_direct_address_input(page: "Page") -> None:
     """Select 'Enter address directly' on the delivery method page."""
-    await _click_if_visible(page, "直接住所を入力する", required=True)
+    direct = page.get_by_text("直接住所を入力する", exact=False)
+    if await direct.count() > 0:
+        await direct.first.click()
+        await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
 
 
 async def _fill_recipient_info(page: "Page", order: ShopifyOrder) -> None:
@@ -303,7 +480,7 @@ async def _fill_recipient_info(page: "Page", order: ShopifyOrder) -> None:
 
     await _uncheck_address_book(page)
 
-    next_btn = page.locator(YAMATO_SELECTORS["next_recipient"])
+    next_btn = page.locator(YAMATO_SELECTORS["next_btn"])
     await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
     if await next_btn.count() > 0:
         is_disabled = await next_btn.first.get_attribute("disabled")
@@ -314,19 +491,23 @@ async def _fill_recipient_info(page: "Page", order: ShopifyOrder) -> None:
 
 async def _toggle_notification(page: "Page", email: str) -> None:
     """Check the delivery notification checkbox and fill the email field."""
-    notify_label = page.get_by_text("お届け予定をお知らせ")
-    if await notify_label.count() > 0:
-        checkbox = notify_label.locator("xpath=ancestor::label//input[@type='checkbox']")
-        if await checkbox.count() == 0:
-            checkbox = notify_label.locator("xpath=preceding-sibling::input[@type='checkbox'] | following-sibling::input[@type='checkbox']")
-        if await checkbox.count() > 0:
-            if not await checkbox.first.is_checked():
-                await notify_label.first.click()
-                await page.wait_for_timeout(TIMEOUT_INPUT_MS)
+    notify_cb = page.locator('input[name*="notifyFlg"]')
+    if await notify_cb.count() > 0:
+        if not await notify_cb.first.is_checked():
+            await page.evaluate("""() => {
+                const cb = document.querySelector('input[name*="notifyFlg"]');
+                if (cb) {
+                    cb.checked = true;
+                    cb.dispatchEvent(new Event('change', {bubbles: true}));
+                    const lbl = cb.closest('label');
+                    if (lbl) lbl.click();
+                }
+            }""")
+            await page.wait_for_timeout(TIMEOUT_INPUT_MS)
 
-    email_input = page.locator('input[type="email"]')
+    email_input = page.locator('input[name*="mailAddress"]')
     if await email_input.count() == 0:
-        email_input = page.locator('input[name*="mail" i]')
+        email_input = page.locator('input[type="email"]')
     if await email_input.count() > 0:
         await email_input.first.fill(email)
         await page.wait_for_timeout(TIMEOUT_INPUT_MS)
@@ -334,45 +515,44 @@ async def _toggle_notification(page: "Page", email: str) -> None:
 
 async def _uncheck_address_book(page: "Page") -> None:
     """Uncheck the address book registration checkbox."""
-    address_book_label = page.get_by_text("アドレス帳へ登録")
-    if await address_book_label.count() > 0:
-        checkbox = address_book_label.locator("xpath=ancestor::label//input[@type='checkbox']")
-        if await checkbox.count() > 0:
-            if await checkbox.first.is_checked():
-                await address_book_label.first.click()
-                await page.wait_for_timeout(TIMEOUT_INPUT_MS)
+    await page.evaluate("""() => {
+        const cb = document.querySelector('input[name*="addAddressBook"]');
+        if (cb && cb.checked) {
+            cb.checked = false;
+            cb.dispatchEvent(new Event('change', {bubbles: true}));
+            const lbl = cb.closest('label');
+            if (lbl) lbl.click();
+        }
+    }""")
+    await page.wait_for_timeout(TIMEOUT_INPUT_MS)
 
 
-async def _select_sender_from_address_book(page: "Page", settings: Settings) -> None:
+async def _select_sender_from_address_book(
+    page: "Page", settings: Settings
+) -> None:
     """Select sender from address book instead of manual input."""
-    await _click_if_visible(page, "アドレス帳から選択", required=False)
-    await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
+    addr_book = page.get_by_text("アドレス帳から選択", exact=False)
+    if await addr_book.count() > 0:
+        await addr_book.first.click()
+        await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
 
     sender_name = settings.sender_name or "フツテック"
-    sender_entry = page.get_by_text(sender_name, exact=False)
-    if await sender_entry.count() > 0:
-        await sender_entry.first.click()
-        await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
-    else:
-        logger.warning("Exact sender '%s' not found; attempting partial match", sender_name)
-        parts = sender_name.split()
-        for part in parts:
-            entry = page.get_by_text(part, exact=False)
-            match_count = await entry.count()
-            if match_count == 1:
-                logger.warning("Selected sender via partial match on '%s'", part)
-                await entry.first.click()
-                await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
-                break
-            elif match_count > 1:
-                logger.warning("Partial match '%s' is ambiguous (%d results), skipping", part, match_count)
-        else:
-            logger.error("Failed to select sender '%s' from address book - no match found", sender_name)
+    for candidate in [sender_name, "フツテック", "TechRental"]:
+        entry = page.get_by_text(candidate, exact=False)
+        if await entry.count() > 0:
+            await entry.first.click()
+            await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
+            logger.info("Selected sender: %s", candidate)
+            return
+
+    logger.error(
+        "Failed to select sender '%s' from address book", sender_name
+    )
 
 
 async def _confirm_sender_info(page: "Page") -> None:
     """Click next on the pre-filled sender info page."""
-    next_btn = page.locator("a#next")
+    next_btn = page.locator(YAMATO_SELECTORS["next_btn"])
     if await next_btn.count() > 0:
         is_disabled = await next_btn.first.get_attribute("disabled")
         if not is_disabled:
@@ -382,15 +562,18 @@ async def _confirm_sender_info(page: "Page") -> None:
 
 async def _select_shipping_location(page: "Page") -> None:
     """Select shipping location as nearest to sender address."""
-    await _click_if_visible(page, "近くから発送", required=False)
-    if await page.get_by_text("近くから発送").count() == 0:
-        await _click_if_visible(page, "ご依頼主住所", required=False)
+    for loc_text in ["近くから発送", "コンビニから発送", "ご依頼主住所"]:
+        loc = page.get_by_text(loc_text, exact=False)
+        if await loc.count() > 0:
+            await loc.first.click()
+            await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
+            return
 
 
 async def _fill_delivery_datetime(page: "Page", order: ShopifyOrder) -> None:
     """Set shipping date, delivery date, and time slot with fallback logic."""
     if not order.delivery_date:
-        next_btn = page.locator("a#next")
+        next_btn = page.locator(YAMATO_SELECTORS["next_btn"])
         if await next_btn.count() > 0:
             await next_btn.first.click()
             await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
@@ -399,8 +582,12 @@ async def _fill_delivery_datetime(page: "Page", order: ShopifyOrder) -> None:
     try:
         delivery_dt = datetime.strptime(order.delivery_date, "%Y%m%d")
     except ValueError:
-        logger.exception("Invalid delivery_date format '%s' for order %s", order.delivery_date, order.order_number)
-        next_btn = page.locator("a#next")
+        logger.exception(
+            "Invalid delivery_date format '%s' for order %s",
+            order.delivery_date,
+            order.order_number,
+        )
+        next_btn = page.locator(YAMATO_SELECTORS["next_btn"])
         if await next_btn.count() > 0:
             await next_btn.first.click()
             await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
@@ -441,7 +628,7 @@ async def _fill_delivery_datetime(page: "Page", order: ShopifyOrder) -> None:
                 else:
                     break
 
-    next_btn = page.locator("a#next")
+    next_btn = page.locator(YAMATO_SELECTORS["next_btn"])
     if await next_btn.count() > 0:
         is_disabled = await next_btn.first.get_attribute("disabled")
         if not is_disabled:
@@ -460,19 +647,19 @@ async def _save_draft(page: "Page") -> None:
     await page.wait_for_timeout(TIMEOUT_DIALOG_MS)
 
 
-async def _click_if_visible(page: "Page", text: str, *, required: bool = False) -> None:
-    """Click the first element matching *text* if it exists on the page."""
-    btn = page.get_by_text(text)
-    if await btn.count() > 0:
-        await btn.first.click()
-        await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
-    elif required:
-        raise RuntimeError(f"Required button not found: '{text}'")
+async def _check_session_error(page: "Page") -> None:
+    """Check if Yamato session expired or hit an error state."""
+    content = await page.content()
+    if "本サービスを継続する" in content:
+        raise RuntimeError("Yamato session expired or invalid state")
 
 
-async def _fill_input(page: "Page", selector: str, value: str, timeout_ms: int = TIMEOUT_INPUT_MS) -> None:
+async def _fill_input(
+    page: "Page", selector: str, value: str, timeout_ms: int = TIMEOUT_INPUT_MS
+) -> None:
     """Fill the first input matching *selector* with *value* if it exists."""
     locator = page.locator(selector)
     if await locator.count() > 0:
         await locator.first.fill(value)
+        await locator.first.dispatch_event("input")
         await page.wait_for_timeout(timeout_ms)

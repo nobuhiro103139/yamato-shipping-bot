@@ -23,8 +23,6 @@ RUN adduser --disabled-password --gecos "" appuser \
 USER appuser
 
 ENV PYTHONUNBUFFERED=1
-ENV HEADLESS_BROWSER=true
-ENV AUTH_STATE_PATH=/app/data/auth.json
 
 EXPOSE 8000
 
