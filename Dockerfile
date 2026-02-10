@@ -13,13 +13,16 @@ COPY pyproject.toml poetry.lock* ./
 RUN poetry config virtualenvs.create false \
     && poetry install --no-interaction --no-ansi --no-root
 
-RUN python -m playwright install --with-deps chromium
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+
+RUN mkdir -p /ms-playwright \
+    && python -m playwright install --with-deps chromium
 
 COPY scripts/ scripts/
 
 RUN adduser --disabled-password --gecos "" appuser \
     && mkdir -p /app/qr_codes \
-    && chown -R appuser:appuser /app
+    && chown -R appuser:appuser /app /ms-playwright
 
 USER appuser
 

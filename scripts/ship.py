@@ -41,11 +41,9 @@ async def run_shipment_batch() -> int:
         raw_name = addr.last_name or addr.first_name or ""
         masked_name = f"{raw_name[:1]}***" if raw_name else "N/A"
         logger.info(
-            "Processing %s — %s, %s%s***",
+            "Processing %s — %s",
             order.order_number,
             masked_name,
-            addr.province,
-            addr.city,
         )
 
         result = await process_shipment(order)

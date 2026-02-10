@@ -45,7 +45,7 @@ class ShopifyOrder(BaseModel):
     shipping_address: ShippingAddress
     items: list[OrderItem]
     package_size: PackageSize = PackageSize.M
-    delivery_date: str = ""
+    delivery_date: str = ""  # YYYYMMDD
     delivery_time: DeliveryTimeSlot = DeliveryTimeSlot.NONE
     customer_email: str = ""
 
