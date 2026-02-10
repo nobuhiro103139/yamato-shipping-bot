@@ -110,10 +110,18 @@ async def run():
 
             # ===== STEP 2: Login =====
             print("\n=== Step 2: Login ===")
-            login_link = page.get_by_role("link", name="ログイン")
-            if await login_link.count() > 0:
-                await login_link.first.click()
-            await page.wait_for_timeout(5000)
+
+            # Check if sp-send landing page needs login
+            content = await page.content()
+            needs_login = "ログインして利用する" in content
+
+            if needs_login:
+                # Click "クロネコメンバーズにログインして利用する" to start auth flow
+                login_btn = page.get_by_text("ログインして利用する", exact=False)
+                if await login_btn.count() > 0:
+                    await login_btn.first.click()
+                    await page.wait_for_timeout(5000)
+                    print(f"  Clicked login button. URL: {page.url}")
 
             if "auth.kms" in page.url:
                 await page.locator('#login-form-id').fill(KURONEKO_ID)
@@ -132,25 +140,54 @@ async def run():
                     elif "member" in url:
                         print(f"  On member page after {(i+1)*2}s, navigating to sp-send...")
                         await page.goto(YAMATO_SEND_URL, wait_until="domcontentloaded")
-                        await page.wait_for_timeout(3000)
+                        await page.wait_for_timeout(5000)
                         break
                     elif i % 5 == 4:
                         print(f"  Still on: {url[:60]}... ({(i+1)*2}s)")
                 else:
                     print(f"  Login redirect timeout after 60s. URL: {page.url}")
-                    # Last resort: navigate directly
                     await page.goto(YAMATO_SEND_URL, wait_until="domcontentloaded")
                     await page.wait_for_timeout(5000)
 
             await page.wait_for_timeout(2000)
+
+            # If still on landing page, try SSO via "ログインして利用する" again
             content = await page.content()
-            logged_in = "加藤" in content or "ログアウト" in content
-            print(f"  Login: {'OK' if logged_in else 'FAILED'}")
+            logout_check = page.locator('text=ログアウト')
+            is_actually_logged_in = (await logout_check.count() > 0 and await logout_check.first.is_visible())
+            if "ログインして利用する" in content and not is_actually_logged_in:
+                print("  Session not established on sp-send, retrying SSO...")
+                sso_btn = page.get_by_text("ログインして利用する", exact=False)
+                if await sso_btn.count() > 0:
+                    await sso_btn.first.click()
+                    await page.wait_for_timeout(8000)
+                    print(f"  After SSO retry, URL: {page.url}")
+                    # If auth page appears again (already logged in), it might auto-redirect
+                    if "auth.kms" in page.url:
+                        print("  Auth page shown again, waiting for auto-redirect...")
+                        for i in range(15):
+                            await page.wait_for_timeout(2000)
+                            if "sp-send" in page.url:
+                                print(f"  Auto-redirected after {(i+1)*2}s")
+                                break
+                        else:
+                            await page.goto(YAMATO_SEND_URL, wait_until="domcontentloaded")
+                            await page.wait_for_timeout(5000)
+
+            await page.wait_for_timeout(2000)
+            # Robust login detection: check visible state of page
+            logout_btn = page.locator('text=ログアウト').first
+            logout_visible = await logout_btn.is_visible() if await page.locator('text=ログアウト').count() > 0 else False
+            content = await page.content()
+            has_login_btn = "ログインして利用する" in content
+            logged_in = logout_visible and not has_login_btn
+            print(f"  Login: {'OK' if logged_in else 'FAILED'} (logout_visible={logout_visible}, has_login_btn={has_login_btn})")
+            print(f"  Current URL: {page.url}")
             await ss(page, "after_login")
 
             if not logged_in:
                 RESULTS["2_login"] = "FAILED"
-                raise RuntimeError("Login failed")
+                raise RuntimeError("Login failed - page still shows login button")
             RESULTS["2_login"] = "OK"
 
             # ===== STEP 3: 通常の荷物を送る =====
@@ -207,36 +244,15 @@ async def run():
 
             # ===== STEP 5: Package count =====
             print("\n=== Step 5: Package count ===")
-            # Check for count selection images
-            count_btn = page.locator("a#nextLeavePay1")  # guess
-            if await count_btn.count() == 0:
-                # Find by image alt
-                one_img = page.get_by_alt_text("1個", exact=False)
-                if await one_img.count() == 0:
-                    one_img = page.get_by_alt_text("１個", exact=False)
-                if await one_img.count() > 0:
-                    await one_img.first.click()
-                    await page.wait_for_timeout(3000)
-                    print("  Clicked 1個 image")
-                    RESULTS["5_count"] = "OK"
-                else:
-                    # Dump all images and links
-                    info = await dump_page(page, "Count page")
-                    # Try finding count by any visible link/button
-                    for img_info in info.get('imgs', []):
-                        if "1" in img_info.get('alt', '') or "個" in img_info.get('alt', ''):
-                            # Click by parent a id
-                            pid = img_info.get('parentId', '')
-                            if pid:
-                                await page.locator(f"a#{pid}").click()
-                                await page.wait_for_timeout(3000)
-                                print(f"  Clicked count via parent #{pid}")
-                                break
-                    RESULTS["5_count"] = "SKIPPED (auto?)"
-            else:
-                await count_btn.click()
+            one_btn = page.locator("a#one")
+            if await one_btn.count() > 0:
+                await one_btn.click()
                 await page.wait_for_timeout(3000)
+                print("  Clicked a#one (１個)")
                 RESULTS["5_count"] = "OK"
+            else:
+                info = await dump_page(page, "Count page")
+                RESULTS["5_count"] = "NOT FOUND"
 
             await ss(page, "after_count")
             if await check_error(page):
@@ -247,25 +263,29 @@ async def run():
             print("\n=== Step 6: Package settings ===")
             await dump_page(page, "Package settings page")
 
-            # Size: コンパクト
-            size_radio = page.locator('input[name="viwb2050ActionBean.size"]')
-            if await size_radio.count() > 0:
-                for i in range(await size_radio.count()):
-                    val = await size_radio.nth(i).get_attribute("value")
-                    label_text = await size_radio.nth(i).evaluate("el => el.closest('label')?.textContent?.trim() || el.parentElement?.textContent?.trim() || ''")
-                    print(f"  Radio {i}: value={val} label={label_text[:30]}")
-                    if "コンパクト" in label_text:
-                        await size_radio.nth(i).check(force=True)
-                        await page.wait_for_timeout(1000)
-                        print("  Selected コンパクト")
-                        break
-            else:
-                # Try by label click
-                compact = page.get_by_text("コンパクト")
-                if await compact.count() > 0:
-                    await compact.first.click()
-                    await page.wait_for_timeout(1000)
-                    print("  Clicked コンパクト text")
+            # Size: select S via JS (radios are hidden, styled as label boxes)
+            size_set = await page.evaluate("""
+                () => {
+                    const radios = document.querySelectorAll('input[name="viwb2050ActionBean.size"]');
+                    const info = [];
+                    for (const r of radios) {
+                        const lbl = r.closest('label') || r.parentElement;
+                        info.push({value: r.value, text: lbl?.textContent?.trim()?.substring(0,30) || ''});
+                    }
+                    // Click S label
+                    for (const r of radios) {
+                        if (r.value === 'S') {
+                            r.checked = true;
+                            r.dispatchEvent(new Event('change', {bubbles: true}));
+                            const lbl = r.closest('label');
+                            if (lbl) lbl.click();
+                            return {selected: 'S', all: info};
+                        }
+                    }
+                    return {selected: null, all: info};
+                }
+            """)
+            print(f"  Size radios: {size_set}")
 
             # Product name
             item = page.locator('input[name="viwb2050ActionBean.itemName"]')
@@ -275,35 +295,76 @@ async def run():
             else:
                 print("  WARNING: itemName not found")
 
-            # Handling: 精密機械
-            handling = page.locator('input[name="handling"][value="01"]')
-            if await handling.count() > 0:
-                await handling.first.check(force=True)
-                print("  Handling: 精密機械")
+            # Handling: click 精密機械 image/label via JS
+            await page.evaluate("""
+                () => {
+                    const imgs = document.querySelectorAll('img[alt="精密機械"]');
+                    if (imgs.length > 0) {
+                        const parent = imgs[0].closest('label') || imgs[0].closest('a') || imgs[0].parentElement;
+                        if (parent) parent.click();
+                    }
+                }
+            """)
+            await page.wait_for_timeout(500)
+            print("  Handling: 精密機械 (via JS)")
 
-            # Not prohibited
-            prohibited = page.locator('input[name="viwb2050ActionBean.notProhibited"]')
-            if await prohibited.count() > 0:
-                await prohibited.first.check(force=True)
-                print("  Prohibited: confirmed")
+            # Not prohibited checkbox via JS
+            await page.evaluate("""
+                () => {
+                    const cb = document.querySelector('input[name="viwb2050ActionBean.notProhibited"]');
+                    if (cb && !cb.checked) {
+                        cb.checked = true;
+                        cb.dispatchEvent(new Event('change', {bubbles: true}));
+                        const lbl = cb.closest('label');
+                        if (lbl) lbl.click();
+                    }
+                }
+            """)
+            await page.wait_for_timeout(500)
+            print("  Prohibited: confirmed (via JS)")
 
             await ss(page, "package_filled")
 
-            # Next button
-            next_pkg = page.locator('a[data-action="Viwb2050Action_doNext.action"]')
-            if await next_pkg.count() > 0:
-                await next_pkg.first.click(force=True)
-                await page.wait_for_timeout(3000)
-                print("  Next (package) clicked")
-            else:
-                # Try a#next or other patterns
-                next_btn = page.locator("a#next")
-                if await next_btn.count() > 0:
-                    await next_btn.first.click(force=True)
+            # Next button - look for submit link/button with setAction
+            next_clicked = False
+            for sel in [
+                'a[data-action="Viwb2050Action_doNext.action"]',
+                'a#next',
+                'a[onclick*="Viwb2050Action_doNext"]',
+            ]:
+                loc = page.locator(sel)
+                if await loc.count() > 0:
+                    await loc.first.click(force=True)
                     await page.wait_for_timeout(3000)
-                    print("  Next (#next) clicked")
-                else:
-                    print("  WARNING: No next button found")
+                    print(f"  Next clicked: {sel}")
+                    next_clicked = True
+                    break
+            if not next_clicked:
+                # Try clicking by visible text
+                for txt in ["荷物内容を入力してください", "次へ", "次へ進む"]:
+                    btn = page.get_by_text(txt, exact=False)
+                    if await btn.count() > 0:
+                        await btn.first.click()
+                        await page.wait_for_timeout(3000)
+                        print(f"  Next clicked: '{txt}'")
+                        next_clicked = True
+                        break
+            if not next_clicked:
+                # Last resort: find any submit-like link via JS
+                await page.evaluate("""
+                    () => {
+                        const links = document.querySelectorAll('a[onclick*="doNext"], a[onclick*="setAction"]');
+                        for (const a of links) {
+                            if (a.offsetParent !== null) { a.click(); return true; }
+                        }
+                        const form = document.getElementById('form');
+                        if (form) { form.submit(); return true; }
+                        return false;
+                    }
+                """)
+                await page.wait_for_timeout(3000)
+                print("  Next: JS fallback")
+
             await ss(page, "after_pkg_next")
             RESULTS["6_package"] = "FILLED" if await item.count() > 0 else "PARTIAL"
 
