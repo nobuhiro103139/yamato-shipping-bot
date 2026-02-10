@@ -40,9 +40,8 @@ def _build_task_prompt(shipment: Shipment, settings: Settings) -> str:
         f"ヤマト運輸「スマホで送る」({YAMATO_SEND_URL}) で荷物の送り状を作成してください。",
         "",
         "## ログイン",
-        "もしログイン画面が表示されたら、以下の情報でログインしてください：",
-        f"- クロネコID: {settings.kuroneko_login_id}",
-        f"- パスワード: {settings.kuroneko_password}",
+        "保存済みのセッション（auth.json）でログイン状態が維持されています。",
+        "もしログイン画面にリダイレクトされた場合は、処理を中止してください。",
         "",
         "## 荷物の新規作成",
         "ログイン後、荷物一覧ページが表示されたら「荷物を送る」タブを選択して新規作成を開始してください。",
@@ -131,12 +130,18 @@ def _build_task_prompt(shipment: Shipment, settings: Settings) -> str:
     return "\n".join(lines)
 
 
-def _build_browser_config() -> "dict":
+def _build_browser_config() -> "Browser":
     """Build Browser Use Browser configuration with iPhone mobile emulation."""
     from browser_use import Browser
 
     settings = get_settings()
     auth_path = settings.auth_state_path
+
+    if not Path(auth_path).exists():
+        raise FileNotFoundError(
+            f"Auth state file not found: {auth_path}. "
+            "Run save_auth_state() first to login manually."
+        )
 
     browser_kwargs: dict = {
         "headless": settings.headless_browser,
@@ -150,10 +155,8 @@ def _build_browser_config() -> "dict":
             "*.kuronekoyamato.co.jp",
             "*.kms.kuronekoyamato.co.jp",
         ],
+        "storage_state": auth_path,
     }
-
-    if Path(auth_path).exists():
-        browser_kwargs["storage_state"] = auth_path
 
     return Browser(**browser_kwargs)
 
@@ -198,6 +201,7 @@ async def process_shipment(shipment: Shipment) -> ShippingResult:
             error_message="LLM API key not configured. Set LLM_API_KEY in .env",
         )
 
+    browser = None
     try:
         from browser_use import Agent
 
@@ -215,13 +219,30 @@ async def process_shipment(shipment: Shipment) -> ShippingResult:
         logger.info("Processing shipment for %s***", identifier[:2])
         result = await agent.run(max_steps=80)
 
-        screenshot_path = str(RESULTS_DIR / f"{identifier}_done.png")
+        screenshot_path = ""
+        if result and result.screenshots():
+            last_screenshot = result.screenshots()[-1]
+            screenshot_file = RESULTS_DIR / f"{identifier}_done.png"
+            screenshot_file.write_bytes(last_screenshot)
+            screenshot_path = str(screenshot_file)
 
+        if result and result.is_done() and not result.has_errors():
+            return ShippingResult(
+                order_id=identifier,
+                order_number=identifier,
+                status=ShippingStatus.COMPLETED,
+                qr_code_path=screenshot_path,
+            )
+
+        error_msg = "Agent did not complete successfully"
+        if result and result.errors():
+            error_msg = "; ".join(str(e) for e in result.errors())
         return ShippingResult(
             order_id=identifier,
             order_number=identifier,
-            status=ShippingStatus.COMPLETED,
+            status=ShippingStatus.FAILED,
             qr_code_path=screenshot_path,
+            error_message=error_msg,
         )
 
     except ImportError:
@@ -239,6 +260,12 @@ async def process_shipment(shipment: Shipment) -> ShippingResult:
             status=ShippingStatus.FAILED,
             error_message=str(e),
         )
+    finally:
+        if browser is not None:
+            try:
+                await browser.close()
+            except Exception:
+                logger.debug("Browser close failed", exc_info=True)
 
 
 def load_shipments(path: str = "shipments.json") -> list[Shipment]:
@@ -248,8 +275,12 @@ def load_shipments(path: str = "shipments.json") -> list[Shipment]:
         logger.warning("Shipments file not found: %s", path)
         return []
 
-    with open(file_path, encoding="utf-8") as f:
-        data = json.load(f)
+    try:
+        with open(file_path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, ValueError) as exc:
+        logger.error("Invalid JSON in shipments file %s: %s", path, exc)
+        return []
 
     if isinstance(data, dict):
         data = [data]

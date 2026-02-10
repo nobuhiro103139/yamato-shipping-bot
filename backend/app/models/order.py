@@ -82,10 +82,10 @@ class ShippingResult(BaseModel):
 
 PACKAGE_SIZE_LABELS: dict[PackageSize, str] = {
     PackageSize.COMPACT: "コンパクト",
-    PackageSize.S: "Ｓ",
-    PackageSize.M: "Ｍ",
-    PackageSize.L: "Ｌ",
-    PackageSize.LL: "ＬＬ",
+    PackageSize.S: "Ｓ",  # noqa: RUF001
+    PackageSize.M: "Ｍ",  # noqa: RUF001
+    PackageSize.L: "Ｌ",  # noqa: RUF001
+    PackageSize.LL: "ＬＬ",  # noqa: RUF001
 }
 
 

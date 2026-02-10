@@ -12,8 +12,8 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from playwright.async_api import Dialog, Page
 
-QR_CODE_DIR = Path("qr_codes")
-QR_CODE_DIR.mkdir(exist_ok=True)
+RESULTS_DIR = Path("results")
+RESULTS_DIR.mkdir(exist_ok=True)
 
 YAMATO_SEND_URL = "https://sp-send.kuronekoyamato.co.jp/"
 
@@ -190,7 +190,7 @@ async def _run_yamato_automation(
 
             await _save_draft(page)
 
-            screenshot_path = str(QR_CODE_DIR / f"{order.order_number}_confirmation.png")
+            screenshot_path = str(RESULTS_DIR / f"{order.order_number}_confirmation.png")
             await page.screenshot(path=screenshot_path, full_page=True)
             await context.storage_state(path=auth_path)
 
@@ -202,7 +202,7 @@ async def _run_yamato_automation(
             )
 
         except Exception:
-            error_screenshot = str(QR_CODE_DIR / f"{order.order_number}_error.png")
+            error_screenshot = str(RESULTS_DIR / f"{order.order_number}_error.png")
             await page.screenshot(path=error_screenshot, full_page=True)
             raise
 

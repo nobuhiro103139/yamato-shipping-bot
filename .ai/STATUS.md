@@ -14,7 +14,7 @@
 - [x] Type hints and docstrings
 - [x] `.ai/` directory with project context, tips, playbook, and status
 - [x] Delivery date/time, notification, address book selection (PR #6)
-- [x] Manual shipment creation via Devin browser (3 shipments: 小島, 舩岡, 渡辺)
+- [x] Manual shipment creation via Devin browser (3 shipments: 受取人A, 受取人B, 受取人C)
 - [x] Playwright anti-bot detection analysis (headless/headful/CDP all blocked)
 - [x] **Browser Use refactoring** - `yamato_agent.py` with LLM-driven automation
 - [x] **Shipment model** - `Shipment` class for shipments.json input

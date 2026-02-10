@@ -20,9 +20,9 @@ app.add_middleware(
 app.include_router(orders.router)
 app.include_router(shipping.router)
 
-qr_code_dir = Path("qr_codes")
-qr_code_dir.mkdir(exist_ok=True)
-app.mount("/qr_codes", StaticFiles(directory="qr_codes"), name="qr_codes")
+results_dir = Path("results")
+results_dir.mkdir(exist_ok=True)
+app.mount("/results", StaticFiles(directory="results"), name="results")
 
 
 @app.get("/healthz")

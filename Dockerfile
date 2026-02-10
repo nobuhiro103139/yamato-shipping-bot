@@ -12,8 +12,9 @@ COPY backend/pyproject.toml backend/poetry.lock* ./
 RUN poetry config virtualenvs.create false \
     && poetry install --no-interaction --no-ansi --no-root
 
-RUN python -c "from browser_use import Browser" 2>/dev/null || true \
-    && playwright install --with-deps chromium
+RUN python -c "import playwright" 2>/dev/null \
+    && playwright install --with-deps chromium \
+    || echo "Playwright not installed, skipping browser setup"
 
 COPY backend/ .
 

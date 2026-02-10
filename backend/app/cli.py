@@ -20,7 +20,8 @@ async def run_shipment_batch() -> int:
     results = []
 
     for shipment in shipments:
-        masked_name = f"{shipment.recipient_last_name[:1]}***"
+        initial = shipment.recipient_last_name[:1] if shipment.recipient_last_name else "?"
+        masked_name = f"{initial}***"
         print(f"\nProcessing: {masked_name}")
         print(f"  Package: {shipment.package_size_label}")
 
@@ -108,7 +109,8 @@ async def check_shipments() -> int:
     shipments = load_shipments(settings.shipments_path)
     print(f"Pending shipments in {settings.shipments_path}: {len(shipments)}")
     for s in shipments:
-        masked = f"{s.recipient_last_name[:1]}***"
+        initial = s.recipient_last_name[:1] if s.recipient_last_name else "?"
+        masked = f"{initial}***"
         print(f"  {s.identifier}: {masked} ({s.package_size_label})")
         if s.delivery_date:
             print(f"    Delivery: {s.delivery_date} {s.delivery_time}")

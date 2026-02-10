@@ -14,7 +14,7 @@ export interface OrderItem {
   quantity: number;
 }
 
-export type PackageSize = "S" | "M" | "L" | "LL";
+export type PackageSize = "compact" | "S" | "M" | "L" | "LL";
 
 export interface ShopifyOrder {
   order_id: string;
