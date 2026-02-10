@@ -73,6 +73,8 @@ GitHub Secrets に以下を設定すれば毎日 10:00 JST に自動実行され
 - `SHOPIFY_STORE_URL`, `SHOPIFY_ACCESS_TOKEN`
 - `KURONEKO_LOGIN_ID`, `KURONEKO_PASSWORD`
 - `SENDER_NAME`
+- `SENDER_POSTAL_CODE`, `SENDER_ADDRESS1`, `SENDER_ADDRESS2` (任意), `SENDER_PHONE`
+- `DEFAULT_PACKAGE_SIZE` (任意, デフォルト: M)
 - `LINE_NOTIFY_TOKEN`
 
 手動実行: Actions タブ > "Daily Shipping" > "Run workflow"

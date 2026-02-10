@@ -61,7 +61,7 @@ async def run_shipment_batch() -> int:
             )
 
     completed = sum(1 for r in results if r.status.value == "completed")
-    failed = sum(1 for r in results if r.status.value == "failed")
+    failed = len(results) - completed
     logger.info("Batch complete: %d succeeded, %d failed / %d total", completed, failed, len(results))
 
     await notify_batch_summary(completed, failed, len(results))
