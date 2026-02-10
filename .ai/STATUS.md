@@ -1,7 +1,7 @@
 # Development Status
 
-> Current phase: **Phase 1 - PoC (Proof of Concept)**
-> Last updated: 2026-02-09
+> Current phase: **Phase 1 - PoC (Xvfb + GitHub Actions 検証中)**
+> Last updated: 2026-02-10
 
 ## Completed
 
@@ -15,67 +15,62 @@
 - [x] PR #1 (Docker + CLI) merged
 - [x] PR #2 (Code quality improvements) merged
 - [x] `.ai/` directory with project context, tips, playbook, and status
+- [x] Delivery date/time, notification, address book selection (PR #6)
+- [x] Manual shipment creation via Devin browser (3 shipments completed)
+- [x] **Xvfb + headful Playwright 検証** — ヤマトのアンチボット検知を突破できることを確認
+- [x] **ヤマトサイトHTML構造の解析** — setAction() メカニズム、画像ボタン構造、フォームBean名を全て特定
+- [x] **E2Eテストスクリプト作成** — `scripts/test_e2e_xvfb.py` にXvfb+headful方式のテストを実装
 
 ## Next TODO (Priority Order)
 
 ### High Priority
 
-- [ ] **Yamato form real-site selector verification**
-  - **Why:** PoC の成功に必須。セレクタが動かなければ自動化は何も始まらない
-  - All CSS selectors in `yamato_automation.py` are best-guess estimates
-  - Need to use `playwright codegen --device="iPhone 13"` on the real Yamato site
-  - Selectors to verify: postal code input, name fields, address fields, phone input, submit buttons
+- [ ] **E2E一気通貫テスト完走**
+  - **Why:** Xvfb方式が全ステップ通るか確認しないと GitHub Actions 案が成立しない
+  - ログイン → 発払い → 荷物設定 → 宛先入力 → 確認画面手前まで
+  - セレクタは全て判明済み（`scripts/test_e2e_xvfb.py` に実装済み）
+  - ログインのレート制限/同時セッション競合に注意（時間を空けて再試行）
+  - テストデータ: 大倉愛子 / 〒206-0024 東京都多摩市諏訪1-27-3 / 09029421016
 
-- [ ] **Shopify API real-environment test**
-  - **Why:** データ取得が正しく動くことの検証なしに、下流の自動入力は開発できない
-  - Set `SHOPIFY_STORE_URL` and `SHOPIFY_ACCESS_TOKEN` with real credentials
-  - Run `python -m app.cli check` to verify order fetching works
-  - Validate the GraphQL query response structure
-  - Note: Currently using API version `2025-10` (supported until Oct 2026). Latest is `2026-01`.
+- [ ] **GitHub Actions workflow 実装**
+  - **Why:** 案Aの本体。Xvfb + headful Playwright で毎朝自動実行
+  - `xvfb-run --auto-servernum` でheadfulブラウザを起動
+  - Secrets: YAMATO_USER, YAMATO_PASS
+  - cron: 毎朝9:00 JST
+  - LINE Notify でQRコードをスマホに送信
 
-- [ ] **Kuroneko Members login flow**
-  - **Why:** 認証なしではヤマトサイトにアクセスできず、セレクタ検証もできない
-  - Test `save_auth_state()` for initial manual login -> auth.json save
-  - Verify session persistence across automation runs
-  - Handle session expiration gracefully
+- [ ] **リポジトリリファクタ（PROPOSAL.md ベース）**
+  - **Why:** 現在のFastAPI/React構成は不要。scripts/ベースにシンプル化
+  - Frontend 削除、FastAPI 削除
+  - `scripts/ship.py`, `scripts/notify.py` ベースに
+  - `yamato_automation.py` と `shopify_service.py` は流用
 
 ### Medium Priority
 
-- [ ] **Payment step implementation**
-  - **Why:** 現在は決済前のスクリーンショットまで。完全自動化にはこのステップが必要
-  - Currently stops at pre-payment screenshot
-  - Need to implement: payment button click -> QR code capture
-  - Requires real Yamato site testing
+- [ ] **LINE Notify 連携**
+  - **Why:** QRコードのスクショをスマホに自動送信
+  - LINE Notify API でQR画像を送信
+  - GitHub Actions の最終ステップで実行
 
-- [ ] **Frontend (React) completion**
-  - **Why:** オペレーターが手動で確認・実行できる UI がないと運用に乗らない
-  - Basic components exist but are not connected to backend
-  - Need: order list display, ship button, status updates, QR code viewer
+- [ ] **Shopify → shipments.json 自動変換**
+  - **Why:** 別エージェントが Shopify → JSON 変換を担当する想定
 
 ### Low Priority
 
-- [ ] **Mac mini deployment**
-  - **Why:** 最終的な本番環境。PoC 完了後に着手
-  - Docker image deployment to Mac mini
-  - cron job setup for daily 10:00 AM execution
-  - Log rotation and monitoring
-
-- [ ] **Error handling improvements**
-  - **Why:** 本番運用の安定性向上。PoC 段階では後回し可
-  - Retry logic for transient failures
-  - Better error messages for common failure modes
-  - Email/Slack notification on failure
+- [ ] **Mac mini フォールバック**
+  - **Why:** Xvfb + GitHub Actions でダメだった場合の保険
+  - headful モードで実行
 
 ## Known Issues
 
-- CSS selectors in `yamato_automation.py` are unverified (may not match actual Yamato HTML)
-- Frontend is scaffolded but not functional
-- No automated tests exist yet
-- Shopify API version `2025-10` is one version behind latest (`2026-01`), but still supported until Oct 2026
+- **ログインリダイレクトが不安定**: auth.kms → sp-send のリダイレクトチェーンが時々タイムアウト（30-60秒）
+- **auth.json セッション永続化は不可**: 前回の検証でセッション再利用は失敗。毎回ログインが必要
+- **同時セッション競合**: オーナーが手動でヤマトを使用中だとログインが失敗する可能性
+- Frontend は scaffolded but not functional（リファクタで削除予定）
 
 ## Phase Roadmap
 
-1. **Phase 1 (Current):** PoC - Verify automation works end-to-end with real Yamato site
-2. **Phase 2:** Production - Complete payment flow, error handling, monitoring
-3. **Phase 3:** Dashboard - Finish React frontend, connect to backend APIs
-4. **Phase 4:** Deployment - Mac mini setup, cron scheduling, operational monitoring
+1. **Phase 1 (Current):** Xvfb + GitHub Actions 検証 — E2E通過を確認
+2. **Phase 2:** リポジトリリファクタ — scripts/ベースにシンプル化
+3. **Phase 3:** GitHub Actions workflow 実装 — cron + LINE Notify
+4. **Phase 4:** Production — 毎朝自動実行、エラー通知、運用監視

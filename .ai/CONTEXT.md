@@ -7,14 +7,16 @@
 
 **Repository:** https://github.com/nobuhiro103139/yamato-shipping-bot
 **Owner:** @nobuhiro103139 (TechRental)
-**Purpose:** TechRental の Shopify 注文データから配送先住所を自動取得し、ヤマト運輸「宅急便をスマホで送る」(https://sp-send.kuronekoyamato.co.jp/) の Web フォームに Playwright で自動入力 → オンライン決済 → QR コード取得までを自動化するシステム。
+**Purpose:** TechRental の配送自動化。Shopify 注文データ → ヤマト運輸「宅急便をスマホで送る」(https://sp-send.kuronekoyamato.co.jp/) Web フォームに Xvfb + headful Playwright で自動入力 → QR コード取得 → LINE Notify でスマホ送信。GitHub Actions cron で毎朝自動実行。
 
 ## Business Background
 
 - TechRental はレンタル機器の配送でヤマト運輸を使っている
 - B2 クラウドは契約/コスト面で利用不可
 - 「スマホで送る」の Web 版を Playwright でモバイルエミュレーション操作する方式を採用
-- 手作業をゼロにしたい。オーナーは環境構築が苦手なので、Docker 一発で動く形を要求
+- 手作業をゼロにしたい。GitHub Actions で完全自動化（ゼロコスト）
+- Xvfb + headful Playwright でヤマトのアンチボット検知を回避（検証済み）
+- auth.json セッション永続化は不可 → 毎回ログインする設計
 
 ## Tech Stack
 
@@ -95,11 +97,13 @@ cli.py                   (CLI entry point, imports services directly)
 
 ## Architecture Decisions
 
-1. **Why Playwright?** Yamato Transport doesn't offer a public API. Browser automation is the only option.
-2. **Why Both Web and CLI?** Web UI for ad-hoc/interactive use; CLI for reliable scheduled batch processing.
-3. **Session Persistence:** Manual login once -> save Playwright `storageState` -> reuse for all automated runs.
-4. **Mobile Emulation:** Yamato's smartphone interface (`sp-send.kuronekoyamato.co.jp`) is more automation-friendly than desktop.
-5. **Sequential Processing:** Orders processed one-at-a-time to avoid overwhelming Yamato's servers.
+1. **Why Xvfb + headful Playwright?** Yamato blocks headless browsers (anti-bot). Xvfb allows headful mode on Linux VMs (GitHub Actions).
+2. **Why GitHub Actions?** Free, no infrastructure to maintain. cron for daily batch execution.
+3. **Why not auth.json?** Session reuse was tested and failed. Fresh login each run is simpler and more reliable.
+4. **Why not Browser Use / LLM?** Overkill for structured data input. Direct Playwright with known selectors is faster, cheaper, deterministic.
+5. **Mobile Emulation:** Yamato's smartphone interface is more automation-friendly than desktop. iPhone UA + 390x844 viewport.
+6. **Sequential Processing:** Shipments processed one-at-a-time to avoid overwhelming Yamato's servers.
+7. **Fallback:** If GitHub Actions + Xvfb doesn't work, Mac mini with headful mode is the backup plan.
 
 ## Key Data Models
 

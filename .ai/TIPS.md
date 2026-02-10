@@ -71,12 +71,32 @@ If no category fits, create a new `## Category` section.
 - Touch events enabled via device emulation
 - These are already configured in the codebase
 
+### [2026-02-10] Xvfb + Headful Playwright = Anti-Bot Bypass
+**Tags:** `playwright`, `bot-detection`, `xvfb`, `critical`, `verified`
+**Verified:** 2026-02-10
+- Xvfb (X Virtual Framebuffer) allows headful browsers on headless Linux VMs
+- Command: `xvfb-run --auto-servernum --server-args="-screen 0 1280x960x24" python script.py`
+- Yamato's anti-bot detection does NOT block Xvfb + headful Playwright
+- This means GitHub Actions (ubuntu-latest) can run headful Playwright via Xvfb
+- **auth.json session reuse does NOT work** - must login fresh every time
+- `navigator.webdriver` returns normal headful values with Xvfb
+
+### [2026-02-10] Login Redirect Chain Timing
+**Tags:** `playwright`, `yamato`, `login`, `timing`, `critical`
+- Login flow: sp-send → auth.kms.kuronekoyamato.co.jp → member.kms → sp-send
+- Redirect takes 10-60 seconds, VERY inconsistent
+- Use polling approach: check URL every 2 seconds for up to 60s
+- Do NOT use `wait_for_url()` with fixed timeout - will fail intermittently
+- If owner is using Yamato site simultaneously, login may fail (session conflict)
+- Rate limiting: avoid rapid login attempts, wait 5+ minutes between retries
+
 ### [2026-02-09] Authentication Strategy
 **Tags:** `playwright`, `auth`, `session`, `kuroneko`
 - Kuroneko Members session is persisted via Playwright `storageState`
 - Saved to `auth.json` after manual login
-- Session expires periodically - re-login required when expired
-- Use `POST /api/shipping/init-auth` to trigger manual login flow
+- **auth.json reuse DOES NOT WORK** (verified 2026-02-10) - landing page shown instead of logged-in state
+- Must login fresh every automation run
+- This simplifies the architecture (no artifact/session management needed)
 
 ### [2026-02-09] Postal Code Lookup Delay
 **Tags:** `playwright`, `yamato`, `timing`, `ajax`
@@ -145,6 +165,60 @@ If no category fits, create a new `## Category` section.
 
 ### [2026-02-09] Mac mini Deployment
 **Tags:** `deployment`, `cron`, `production`
-- Target production environment is a Mac mini
+- Target production environment is a Mac mini (fallback if GitHub Actions fails)
 - cron job at 10:00 AM daily: `docker compose run --rm runner ship`
 - Logs to `/var/log/yamato-bot.log`
+
+## Yamato Site HTML Structure (Verified 2026-02-10)
+
+### [2026-02-10] setAction() Page Navigation Mechanism
+**Tags:** `yamato`, `javascript`, `navigation`, `critical`
+- Yamato mobile site uses `setAction()` JS function for ALL page transitions
+- Pattern: `<a onclick="setAction('Viwb2015Action_doNextLeavePay.action')">`
+- Implementation:
+  ```javascript
+  function setAction(actionStr){
+      document.getElementById('form').setAttribute("action", actionStr);
+      document.getElementById('form').submit();
+  }
+  ```
+- Do NOT call `setAction()` via `page.evaluate()` - breaks session state
+- Instead, click the `<a>` element which triggers the onclick handler naturally
+- URLs follow pattern: `Viwb{pageId}Action_do{Action}.action`
+
+### [2026-02-10] Image Buttons (Not Text)
+**Tags:** `yamato`, `selector`, `button`, `critical`
+- 発払い/着払い buttons are IMAGE buttons, not text
+- Structure: `<a id="nextLeavePay" onclick="setAction(...)"><span class="img"><img alt="発払いで荷物を送る"></span></a>`
+- `get_by_text("発払い")` will NOT find them
+- Use: `page.locator("a#nextLeavePay").click()` or `page.get_by_alt_text("発払いで荷物を送る")`
+- Key button IDs:
+  - `a#nextLeavePay` - 発払いで荷物を送る
+  - `a#nextArrivalPay` - 着払いで荷物を送る
+
+### [2026-02-10] 「通常の荷物を送る」 Strict Mode Issue
+**Tags:** `yamato`, `playwright`, `selector`, `strict-mode`
+- `get_by_text("通常の荷物を送る")` matches 2 elements (span + li with caution text)
+- Fix: use `.first` or `get_by_role("link", name="通常の荷物を送る")`
+
+### [2026-02-10] Complete Verified Selectors for E2E Flow
+**Tags:** `yamato`, `selector`, `verified`, `critical`
+- Package settings (Viwb2050):
+  - Size radio: `input[name="viwb2050ActionBean.size"]`
+  - Item name: `input[name="viwb2050ActionBean.itemName"]`
+  - Handling: `input[name="handling"]` (value="01" for precision)
+  - Not prohibited: `input[name="viwb2050ActionBean.notProhibited"]`
+  - Next: `a[data-action="Viwb2050Action_doNext.action"]`
+- Recipient (Viwb3040):
+  - Last name: `input[name="viwb3040ActionBean.lastName"]`
+  - First name: `input[name="viwb3040ActionBean.firstName"]`
+  - Zip: `input[name="viwb3040ActionBean.zipCode"]`
+  - Address search: `button#btnSearch`
+  - Address3: `input[name="viwb3040ActionBean.address3"]`
+  - Address3opt: `input[name="viwb3040ActionBean.address3opt"]`
+  - Phone: `input[name="viwb3040ActionBean.phoneNumber"]`
+  - Next: `a#next`
+- Delivery (Viwb4100):
+  - Shipping date: `select[name="viwb4100ActionBean.dateToShip"]`
+  - Delivery date: `select[name="viwb4100ActionBean.dateToReceive"]`
+  - Delivery time: `select[name="viwb4100ActionBean.timeToReceive"]`
