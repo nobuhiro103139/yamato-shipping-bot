@@ -3,8 +3,6 @@ from enum import Enum
 
 
 class PackageSize(str, Enum):
-    """Yamato package size categories."""
-
     COMPACT = "compact"
     S = "S"
     M = "M"
@@ -13,8 +11,6 @@ class PackageSize(str, Enum):
 
 
 class DeliveryTimeSlot(str, Enum):
-    """Yamato delivery time slot codes matching form select values."""
-
     NONE = "0"
     MORNING = "1"
     PM_14_16 = "3"
@@ -24,8 +20,6 @@ class DeliveryTimeSlot(str, Enum):
 
 
 class ShippingAddress(BaseModel):
-    """Recipient shipping address extracted from a Shopify order."""
-
     last_name: str
     first_name: str = ""
     postal_code: str
@@ -41,28 +35,22 @@ class ShippingAddress(BaseModel):
 
 
 class OrderItem(BaseModel):
-    """A single line item in a Shopify order."""
-
     title: str
     quantity: int
 
 
 class ShopifyOrder(BaseModel):
-    """An unfulfilled Shopify order with shipping details."""
-
     order_id: str
     order_number: str
     shipping_address: ShippingAddress
     items: list[OrderItem]
     package_size: PackageSize = PackageSize.M
-    delivery_date: str = ""  # Format: YYYYMMDD (e.g., "20260215")
+    delivery_date: str = ""  # YYYYMMDD
     delivery_time: DeliveryTimeSlot = DeliveryTimeSlot.NONE
     customer_email: str = ""
 
 
 class ShippingStatus(str, Enum):
-    """Possible states of a shipment processing attempt."""
-
     PENDING = "pending"
     PROCESSING = "processing"
     COMPLETED = "completed"
@@ -70,8 +58,6 @@ class ShippingStatus(str, Enum):
 
 
 class ShippingResult(BaseModel):
-    """Result of processing a single order through Yamato automation."""
-
     order_id: str
     order_number: str
     status: ShippingStatus

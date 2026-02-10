@@ -1,6 +1,7 @@
 import httpx
-from app.config import get_settings
-from app.models.order import ShopifyOrder, ShippingAddress, OrderItem, PackageSize
+
+from scripts.config import get_settings
+from scripts.models import OrderItem, PackageSize, ShippingAddress, ShopifyOrder
 
 UNFULFILLED_ORDERS_QUERY = """
 {
@@ -42,7 +43,6 @@ PACKAGE_SIZE_THRESHOLDS: list[tuple[int, PackageSize]] = [
 
 
 def _determine_package_size(items: list[OrderItem]) -> PackageSize:
-    """Map total item quantity to the smallest sufficient package size."""
     total_quantity = sum(item.quantity for item in items)
     for threshold, size in PACKAGE_SIZE_THRESHOLDS:
         if total_quantity <= threshold:
@@ -55,7 +55,6 @@ SHOPIFY_REQUEST_TIMEOUT = 30.0
 
 
 async def fetch_unfulfilled_orders() -> list[ShopifyOrder]:
-    """Fetch all unfulfilled orders from Shopify via GraphQL Admin API."""
     settings = get_settings()
     if not settings.shopify_configured:
         return []

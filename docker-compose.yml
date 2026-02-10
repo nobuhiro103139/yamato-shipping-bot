@@ -1,27 +1,12 @@
 services:
-  backend:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    ports:
-      - "8000:8000"
-    env_file:
-      - ./backend/.env
-    volumes:
-      - yamato-qrcodes:/app/qr_codes
-    restart: unless-stopped
-
   runner:
     build:
       context: .
       dockerfile: Dockerfile
-    entrypoint: ["xvfb-run", "--auto-servernum", "--server-args=-screen 0 1280x960x24", "python", "-m", "app.cli"]
     env_file:
-      - ./backend/.env
+      - .env
     volumes:
       - yamato-qrcodes:/app/qr_codes
-    profiles:
-      - cli
 
 volumes:
   yamato-qrcodes:
