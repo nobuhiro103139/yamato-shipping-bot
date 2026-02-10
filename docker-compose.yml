@@ -7,11 +7,7 @@ services:
       - "8000:8000"
     env_file:
       - ./backend/.env
-    environment:
-      - HEADLESS_BROWSER=true
-      - AUTH_STATE_PATH=/app/data/auth.json
     volumes:
-      - yamato-data:/app/data
       - yamato-qrcodes:/app/qr_codes
     restart: unless-stopped
 
@@ -19,18 +15,13 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    entrypoint: ["python", "-m", "app.cli"]
+    entrypoint: ["xvfb-run", "--auto-servernum", "--server-args=-screen 0 1280x960x24", "python", "-m", "app.cli"]
     env_file:
       - ./backend/.env
-    environment:
-      - HEADLESS_BROWSER=true
-      - AUTH_STATE_PATH=/app/data/auth.json
     volumes:
-      - yamato-data:/app/data
       - yamato-qrcodes:/app/qr_codes
     profiles:
       - cli
 
 volumes:
-  yamato-data:
   yamato-qrcodes:

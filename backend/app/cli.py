@@ -90,8 +90,7 @@ def main() -> None:
         print("Configuration:")
         print(f"  Shopify URL: {'configured' if settings.shopify_store_url else 'NOT SET'}")
         print(f"  Shopify Token: {'configured' if settings.shopify_access_token else 'NOT SET'}")
-        print(f"  Headless: {settings.headless_browser}")
-        print(f"  Auth State: {settings.auth_state_path}")
+        print(f"  Kuroneko: {'configured' if settings.kuroneko_configured else 'NOT SET'}")
         code = 0
     else:
         print("Usage: python -m app.cli [ship|check|health]")

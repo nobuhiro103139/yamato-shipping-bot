@@ -2,6 +2,7 @@ FROM python:3.12-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    xvfb \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir poetry
@@ -23,8 +24,6 @@ RUN adduser --disabled-password --gecos "" appuser \
 USER appuser
 
 ENV PYTHONUNBUFFERED=1
-ENV HEADLESS_BROWSER=true
-ENV AUTH_STATE_PATH=/app/data/auth.json
 
 EXPOSE 8000
 
