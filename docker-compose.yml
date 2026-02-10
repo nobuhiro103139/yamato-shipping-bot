@@ -15,7 +15,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    entrypoint: ["python", "-m", "app.cli"]
+    entrypoint: ["xvfb-run", "--auto-servernum", "--server-args=-screen 0 1280x960x24", "python", "-m", "app.cli"]
     env_file:
       - ./backend/.env
     volumes:

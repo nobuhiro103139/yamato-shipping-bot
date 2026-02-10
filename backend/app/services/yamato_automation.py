@@ -86,36 +86,6 @@ YAMATO_SELECTORS = {
 }
 
 
-async def save_auth_state() -> dict[str, object]:
-    """Launch browser in headful mode for manual Kuroneko Members login.
-
-    Opens a visible browser window navigated to the Yamato send page.
-    The user should log in manually, then call /api/yamato/save-session
-    to persist the session state.
-    """
-    try:
-        from playwright.async_api import async_playwright  # noqa: F401
-    except ImportError:
-        return {
-            "success": False,
-            "message": "Playwright is not installed. Run: poetry add playwright && playwright install chromium",
-        }
-
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=False)
-        context = await browser.new_context(**DEVICE_CONFIG)
-        page = await context.new_page()
-        await page.goto(YAMATO_SEND_URL, wait_until="domcontentloaded")
-
-        return {
-            "success": True,
-            "message": (
-                "Browser launched. Please log in to Kuroneko Members manually. "
-                "Once logged in, call the /api/yamato/save-session endpoint."
-            ),
-            "note": "This endpoint opens a visible browser for manual login.",
-        }
-
 
 async def process_shipment(order: ShopifyOrder) -> ShippingResult:
     """Automate the Yamato 'Send via Smartphone' flow for a single order.
@@ -244,7 +214,11 @@ async def _login(page: "Page", settings: Settings) -> None:
 
     if "auth.kms" not in page.url:
         logger.warning("Expected auth.kms page, got: %s", page.url)
-        return
+        logout_loc = page.locator("text=ログアウト")
+        if await logout_loc.count() > 0 and await logout_loc.first.is_visible():
+            logger.info("Already logged in (via unexpected flow)")
+            return
+        raise RuntimeError(f"Login flow failed: unexpected URL {page.url}")
 
     await page.locator(YAMATO_SELECTORS["login_form_id"]).fill(
         settings.kuroneko_login_id
@@ -405,6 +379,7 @@ async def _fill_package_settings(page: "Page", order: ShopifyOrder) -> None:
         loc = page.locator(sel)
         if await loc.count() > 0:
             await loc.first.click(force=True)
+            logger.debug("Package settings next clicked via: %s", sel)
             next_clicked = True
             break
 
@@ -413,6 +388,7 @@ async def _fill_package_settings(page: "Page", order: ShopifyOrder) -> None:
             btn = page.get_by_text(txt, exact=False)
             if await btn.count() > 0:
                 await btn.first.click()
+                logger.debug("Package settings next clicked via text: %s", txt)
                 next_clicked = True
                 break
 
@@ -545,8 +521,8 @@ async def _select_sender_from_address_book(
             logger.info("Selected sender: %s", candidate)
             return
 
-    logger.error(
-        "Failed to select sender '%s' from address book", sender_name
+    raise RuntimeError(
+        f"Sender '{sender_name}' not found in address book"
     )
 
 
