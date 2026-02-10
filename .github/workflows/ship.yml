@@ -1,0 +1,38 @@
+name: Daily Shipping
+
+on:
+  schedule:
+    - cron: '0 1 * * *'  # 毎日 10:00 JST
+  workflow_dispatch:
+
+jobs:
+  ship:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Poetry
+        run: pip install poetry
+
+      - name: Install dependencies
+        run: poetry install --no-interaction --no-ansi --no-root
+
+      - name: Install Playwright browsers
+        run: python -m playwright install --with-deps chromium
+
+      - name: Run shipping automation
+        run: |
+          xvfb-run --auto-servernum --server-args="-screen 0 1280x960x24" \
+            python -m scripts.ship
+        env:
+          SHOPIFY_STORE_URL: ${{ secrets.SHOPIFY_STORE_URL }}
+          SHOPIFY_ACCESS_TOKEN: ${{ secrets.SHOPIFY_ACCESS_TOKEN }}
+          KURONEKO_LOGIN_ID: ${{ secrets.KURONEKO_LOGIN_ID }}
+          KURONEKO_PASSWORD: ${{ secrets.KURONEKO_PASSWORD }}
+          SENDER_NAME: ${{ secrets.SENDER_NAME }}
+          LINE_NOTIFY_TOKEN: ${{ secrets.LINE_NOTIFY_TOKEN }}

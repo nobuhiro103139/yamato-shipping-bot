@@ -3,8 +3,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from app.config import Settings, get_settings
-from app.models.order import PackageSize, ShopifyOrder, ShippingResult, ShippingStatus
+from scripts.config import Settings, get_settings
+from scripts.models import PackageSize, ShopifyOrder, ShippingResult, ShippingStatus
 
 logger = logging.getLogger(__name__)
 
@@ -86,13 +86,7 @@ YAMATO_SELECTORS = {
 }
 
 
-
 async def process_shipment(order: ShopifyOrder) -> ShippingResult:
-    """Automate the Yamato 'Send via Smartphone' flow for a single order.
-
-    Launches Playwright with Xvfb + headful mode, logs in fresh each time,
-    and fills out the shipment form for the given order.
-    """
     settings = get_settings()
 
     if not settings.kuroneko_configured:
@@ -128,11 +122,6 @@ async def process_shipment(order: ShopifyOrder) -> ShippingResult:
 async def _run_yamato_automation(
     order: ShopifyOrder, settings: Settings
 ) -> ShippingResult:
-    """Run the full Yamato form automation flow inside a Playwright browser.
-
-    Uses headful mode with anti-bot measures. Logs in fresh each time
-    since auth.json session reuse does not work with Yamato.
-    """
     from playwright.async_api import async_playwright
 
     async with async_playwright() as p:
@@ -192,14 +181,6 @@ async def _run_yamato_automation(
 
 
 async def _login(page: "Page", settings: Settings) -> None:
-    """Login to Kuroneko Members via sp-send SSO flow.
-
-    Yamato does not support session reuse (auth.json). Every run must
-    login fresh. The flow is:
-    1. Click "ログインして利用する" on sp-send
-    2. Fill credentials on auth.kms page
-    3. Poll for redirect back to sp-send (up to 60s)
-    """
     content = await page.content()
     if "ログインして利用する" not in content:
         logout_loc = page.locator("text=ログアウト")
@@ -279,13 +260,6 @@ async def _login(page: "Page", settings: Settings) -> None:
 
 
 async def _navigate_to_package_settings(page: "Page", order: ShopifyOrder) -> None:
-    """Navigate from top page through service/payment/count selection.
-
-    Uses verified selectors from E2E testing:
-    - "通常の荷物を送る": text click (role link)
-    - 発払い: a#nextLeavePay (image button, setAction JS)
-    - 個数: a#one / a#two etc. (link IDs)
-    """
     normal = page.get_by_role("link", name="通常の荷物を送る")
     if await normal.count() > 0:
         await normal.first.click()
@@ -319,11 +293,6 @@ async def _navigate_to_package_settings(page: "Page", order: ShopifyOrder) -> No
 
 
 async def _fill_package_settings(page: "Page", order: ShopifyOrder) -> None:
-    """Fill the package settings form (size, product name, handling, confirmation).
-
-    Size radios and handling checkboxes are hidden (styled with CSS).
-    Must use JavaScript evaluate to select them.
-    """
     radio_value = PACKAGE_SIZE_TO_RADIO_VALUE.get(order.package_size, "S")
     await page.evaluate(
         """(targetValue) => {
@@ -405,7 +374,6 @@ async def _fill_package_settings(page: "Page", order: ShopifyOrder) -> None:
 
 
 async def _select_direct_address_input(page: "Page") -> None:
-    """Select 'Enter address directly' on the delivery method page."""
     direct = page.get_by_text("直接住所を入力する", exact=False)
     if await direct.count() > 0:
         await direct.first.click()
@@ -413,7 +381,6 @@ async def _select_direct_address_input(page: "Page") -> None:
 
 
 async def _fill_recipient_info(page: "Page", order: ShopifyOrder) -> None:
-    """Fill the recipient form including notification and address book settings."""
     addr = order.shipping_address
 
     await _fill_input(page, YAMATO_SELECTORS["recipient_last_name"], addr.last_name)
@@ -466,7 +433,6 @@ async def _fill_recipient_info(page: "Page", order: ShopifyOrder) -> None:
 
 
 async def _toggle_notification(page: "Page", email: str) -> None:
-    """Check the delivery notification checkbox and fill the email field."""
     notify_cb = page.locator('input[name*="notifyFlg"]')
     if await notify_cb.count() > 0:
         if not await notify_cb.first.is_checked():
@@ -490,7 +456,6 @@ async def _toggle_notification(page: "Page", email: str) -> None:
 
 
 async def _uncheck_address_book(page: "Page") -> None:
-    """Uncheck the address book registration checkbox."""
     await page.evaluate("""() => {
         const cb = document.querySelector('input[name*="addAddressBook"]');
         if (cb && cb.checked) {
@@ -506,7 +471,6 @@ async def _uncheck_address_book(page: "Page") -> None:
 async def _select_sender_from_address_book(
     page: "Page", settings: Settings
 ) -> None:
-    """Select sender from address book instead of manual input."""
     addr_book = page.get_by_text("アドレス帳から選択", exact=False)
     if await addr_book.count() > 0:
         await addr_book.first.click()
@@ -527,7 +491,6 @@ async def _select_sender_from_address_book(
 
 
 async def _confirm_sender_info(page: "Page") -> None:
-    """Click next on the pre-filled sender info page."""
     next_btn = page.locator(YAMATO_SELECTORS["next_btn"])
     if await next_btn.count() > 0:
         is_disabled = await next_btn.first.get_attribute("disabled")
@@ -537,7 +500,6 @@ async def _confirm_sender_info(page: "Page") -> None:
 
 
 async def _select_shipping_location(page: "Page") -> None:
-    """Select shipping location as nearest to sender address."""
     for loc_text in ["近くから発送", "コンビニから発送", "ご依頼主住所"]:
         loc = page.get_by_text(loc_text, exact=False)
         if await loc.count() > 0:
@@ -547,7 +509,6 @@ async def _select_shipping_location(page: "Page") -> None:
 
 
 async def _fill_delivery_datetime(page: "Page", order: ShopifyOrder) -> None:
-    """Set shipping date, delivery date, and time slot with fallback logic."""
     if not order.delivery_date:
         next_btn = page.locator(YAMATO_SELECTORS["next_btn"])
         if await next_btn.count() > 0:
@@ -613,7 +574,6 @@ async def _fill_delivery_datetime(page: "Page", order: ShopifyOrder) -> None:
 
 
 async def _save_draft(page: "Page") -> None:
-    """Save the shipment as a draft on the confirmation page."""
     btn = page.get_by_text("保存して別の荷物を送る")
     if await btn.count() > 0:
         await btn.first.click()
@@ -624,7 +584,6 @@ async def _save_draft(page: "Page") -> None:
 
 
 async def _check_session_error(page: "Page") -> None:
-    """Check if Yamato session expired or hit an error state."""
     content = await page.content()
     if "本サービスを継続する" in content:
         raise RuntimeError("Yamato session expired or invalid state")
@@ -633,7 +592,6 @@ async def _check_session_error(page: "Page") -> None:
 async def _fill_input(
     page: "Page", selector: str, value: str, timeout_ms: int = TIMEOUT_INPUT_MS
 ) -> None:
-    """Fill the first input matching *selector* with *value* if it exists."""
     locator = page.locator(selector)
     if await locator.count() > 0:
         await locator.first.fill(value)

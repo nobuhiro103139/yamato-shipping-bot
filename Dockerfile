@@ -9,22 +9,20 @@ RUN pip install --no-cache-dir poetry
 
 WORKDIR /app
 
-COPY backend/pyproject.toml backend/poetry.lock* ./
+COPY pyproject.toml poetry.lock* ./
 RUN poetry config virtualenvs.create false \
     && poetry install --no-interaction --no-ansi --no-root
 
 RUN python -m playwright install --with-deps chromium
 
-COPY backend/ .
+COPY scripts/ scripts/
 
 RUN adduser --disabled-password --gecos "" appuser \
-    && mkdir -p /app/qr_codes /app/data \
+    && mkdir -p /app/qr_codes \
     && chown -R appuser:appuser /app
 
 USER appuser
 
 ENV PYTHONUNBUFFERED=1
 
-EXPOSE 8000
-
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["xvfb-run", "--auto-servernum", "--server-args=-screen 0 1280x960x24", "python", "-m", "scripts.ship"]
