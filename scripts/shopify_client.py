@@ -68,6 +68,8 @@ async def _fetch_access_token(client: httpx.AsyncClient, store_url: str, client_
     )
     response.raise_for_status()
     token_data = response.json()
+    if "access_token" not in token_data:
+        raise ValueError(f"access_token not in response: {token_data}")
     return token_data["access_token"]
 
 
