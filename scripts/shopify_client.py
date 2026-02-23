@@ -43,6 +43,7 @@ PACKAGE_SIZE_THRESHOLDS: list[tuple[int, PackageSize]] = [
 
 
 def _determine_package_size(items: list[OrderItem]) -> PackageSize:
+    """Return the appropriate package size based on total item quantity."""
     total_quantity = sum(item.quantity for item in items)
     for threshold, size in PACKAGE_SIZE_THRESHOLDS:
         if total_quantity <= threshold:
@@ -54,18 +55,46 @@ SHOPIFY_API_VERSION = "2025-10"
 SHOPIFY_REQUEST_TIMEOUT = 30.0
 
 
+async def _fetch_access_token(client: httpx.AsyncClient, store_url: str, client_id: str, client_secret: str) -> str:
+    """Obtain a short-lived access token via Shopify Client Credentials Grant."""
+    token_url = f"https://{store_url}/admin/oauth/access_token"
+    response = await client.post(
+        token_url,
+        data={
+            "grant_type": "client_credentials",
+            "client_id": client_id,
+            "client_secret": client_secret,
+        },
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        timeout=SHOPIFY_REQUEST_TIMEOUT,
+    )
+    response.raise_for_status()
+    token_data = response.json()
+    if "access_token" not in token_data:
+        raise ValueError(f"access_token not in response, keys: {list(token_data.keys())}")
+    return token_data["access_token"]
+
+
 async def fetch_unfulfilled_orders() -> list[ShopifyOrder]:
+    """Fetch unfulfilled orders from Shopify Admin GraphQL API."""
     settings = get_settings()
     if not settings.shopify_configured:
         return []
 
-    url = f"https://{settings.shopify_store_url}/admin/api/{SHOPIFY_API_VERSION}/graphql.json"
-    headers = {
-        "Content-Type": "application/json",
-        "X-Shopify-Access-Token": settings.shopify_access_token,
-    }
-
     async with httpx.AsyncClient() as client:
+        access_token = await _fetch_access_token(
+            client,
+            settings.shopify_store_url,
+            settings.shopify_client_id,
+            settings.shopify_client_secret,
+        )
+
+        url = f"https://{settings.shopify_store_url}/admin/api/{SHOPIFY_API_VERSION}/graphql.json"
+        headers = {
+            "Content-Type": "application/json",
+            "X-Shopify-Access-Token": access_token,
+        }
+
         response = await client.post(
             url,
             json={"query": UNFULFILLED_ORDERS_QUERY},

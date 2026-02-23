@@ -8,7 +8,8 @@ from scripts.models import PackageSize
 
 class Settings(BaseSettings):
     shopify_store_url: str = ""
-    shopify_access_token: str = ""
+    shopify_client_id: str = ""
+    shopify_client_secret: str = ""
     kuroneko_login_id: str = ""
     kuroneko_password: str = ""
     sender_name: str = ""
@@ -31,7 +32,7 @@ class Settings(BaseSettings):
 
     @property
     def shopify_configured(self) -> bool:
-        return bool(self.shopify_store_url and self.shopify_access_token)
+        return bool(self.shopify_store_url and self.shopify_client_id and self.shopify_client_secret)
 
     @property
     def kuroneko_configured(self) -> bool:
