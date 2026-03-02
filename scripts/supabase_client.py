@@ -83,6 +83,11 @@ def _row_to_rental_order(row: dict, default_package_size: str) -> RentalOrder | 
 
     last_name, first_name = _split_name(customer.get("name", ""))
 
+    phone = customer.get("phone", "")
+    # DB stores phone without leading 0 — restore it for domestic numbers
+    if phone and not phone.startswith("0") and not phone.startswith("+"):
+        phone = "0" + phone
+
     address = ShippingAddress(
         last_name=last_name,
         first_name=first_name,
@@ -90,7 +95,7 @@ def _row_to_rental_order(row: dict, default_package_size: str) -> RentalOrder | 
         province=customer.get("prefecture", ""),
         city=customer.get("city", ""),
         address1=customer.get("address_line", ""),
-        phone=customer.get("phone", ""),
+        phone=phone,
     )
 
     rental_start = row.get("rental_start", "")
