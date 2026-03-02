@@ -172,7 +172,15 @@ async def fetch_pending_rentals(ready_only: bool = False) -> list[RentalOrder]:
 
     orders: list[RentalOrder] = []
     for row in rows:
-        order = _row_to_rental_order(row, settings.default_package_size)
+        try:
+            order = _row_to_rental_order(row, settings.default_package_size)
+        except Exception:
+            logger.exception(
+                "Failed to parse rental row, skipping: id=%s order_number=%s",
+                row.get("id"),
+                row.get("shopify_order_number"),
+            )
+            continue
         if order is not None:
             orders.append(order)
 

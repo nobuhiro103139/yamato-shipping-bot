@@ -47,7 +47,20 @@ async def run_shipment_batch() -> int:
             masked_name,
         )
 
-        result = await process_shipment(order)
+        try:
+            result = await process_shipment(order)
+        except Exception as exc:
+            logger.exception("Shipment processing crashed for rental %s", order.order_id)
+            failed += 1
+            try:
+                await notify_shipment_result(
+                    order.order_number,
+                    success=False,
+                    error=f"発送処理中に例外: {exc}",
+                )
+            except Exception:
+                logger.exception("Failed to send failure notification for %s", order.order_number)
+            continue
 
         if result.status.value == "completed":
             logger.info("  -> Completed. QR: %s", result.qr_code_path)
