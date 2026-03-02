@@ -105,8 +105,13 @@ def _row_to_rental_order(row: dict, default_package_size: str) -> RentalOrder | 
     delivery_time = _parse_delivery_time_slot(row.get("delivery_time_slot"))
     product_name = row.get("product_name", "レンタル機器")
 
+    rental_id = row.get("id")
+    if not rental_id:
+        logger.warning("Rental row missing id, skipping: order_number=%s", order_number)
+        return None
+
     return RentalOrder(
-        order_id=row["id"],
+        order_id=rental_id,
         order_number=order_number,
         shipping_address=address,
         items=[OrderItem(title=product_name, quantity=1)],
@@ -176,7 +181,7 @@ async def update_rental_shipping_status(
     base_url = settings.supabase_url.rstrip("/")
     url = f"{base_url}/rest/v1/rentals"
     headers = _build_headers(settings.supabase_service_role_key)
-    headers["Prefer"] = "return=minimal"
+    headers["Prefer"] = "return=representation"
 
     params = {"id": f"eq.{rental_id}"}
     body: dict[str, str] = {"shipping_status": status}
@@ -192,6 +197,12 @@ async def update_rental_shipping_status(
             timeout=SUPABASE_REQUEST_TIMEOUT,
         )
         response.raise_for_status()
+        updated_rows = response.json()
+        if not isinstance(updated_rows, list) or len(updated_rows) != 1:
+            row_count = len(updated_rows) if isinstance(updated_rows, list) else "invalid"
+            raise RuntimeError(
+                f"Expected 1 updated rental for id={rental_id}, got {row_count}"
+            )
 
     masked_id = rental_id[:8] + "..."
     logger.info("Updated rental %s shipping_status -> '%s'", masked_id, status)

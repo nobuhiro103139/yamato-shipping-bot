@@ -51,7 +51,16 @@ async def run_shipment_batch() -> int:
 
         if result.status.value == "completed":
             logger.info("  -> Completed. QR: %s", result.qr_code_path)
-            await update_rental_shipping_status(order.order_id, "shipped")
+            try:
+                await update_rental_shipping_status(order.order_id, "shipped")
+            except Exception:
+                logger.exception("Failed to update shipped status for rental %s", order.order_id)
+                await notify_shipment_result(
+                    order.order_number,
+                    success=False,
+                    error="発送は成功しましたがDB更新に失敗しました",
+                )
+                continue
             await notify_shipment_result(
                 order.order_number, success=True, qr_code_path=result.qr_code_path
             )
@@ -107,7 +116,7 @@ def main() -> None:
     else:
         print("Usage: python -m scripts.ship [ship|check|health]")
         print("  ship   - Supabase上の発送対象(rentals)を処理 (デフォルト)")
-        print("  check  - Supabase上のpending rentalsを一覧表示（処理なし）")
+        print("  check  - Supabase上のpending rentalsを一覧表示(処理なし)")
         print("  health - Check configuration status")
         code = 2
 

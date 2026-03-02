@@ -5,9 +5,15 @@ on:
     - cron: '0 1 * * *'  # 毎日 10:00 JST
   workflow_dispatch:
 
+concurrency:
+  group: daily-shipping
+  cancel-in-progress: false
+
 jobs:
   ship:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
 

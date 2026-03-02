@@ -52,6 +52,6 @@
 
 ## Phase Roadmap
 
-1. **Phase 1 (Current):** PoC - Supabase連携完了、実サイトでのE2E検証
+1. **Phase 1 (Current):** PoC - Supabase連携完了、実サイトでのE2E検証（進行中）
 2. **Phase 2:** Production - 決済フロー完成、エラーハンドリング、監視
 3. **Phase 3:** Deployment - Mac mini本番運用、cron、ログローテーション
