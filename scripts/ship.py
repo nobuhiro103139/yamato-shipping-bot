@@ -5,7 +5,7 @@ from datetime import datetime
 
 from scripts.config import get_settings
 from scripts.notify import notify_batch_summary, notify_shipment_result
-from scripts.shopify_client import fetch_unfulfilled_orders
+from scripts.supabase_client import fetch_pending_rentals, update_rental_shipping_status
 from scripts.yamato_automation import process_shipment
 
 logging.basicConfig(
@@ -19,22 +19,23 @@ async def run_shipment_batch() -> int:
     settings = get_settings()
     logger.info("Starting shipment batch at %s", datetime.now().isoformat())
 
-    if not settings.shopify_configured:
-        logger.error("Shopify credentials not configured")
+    if not settings.supabase_configured:
+        logger.error("Supabase credentials not configured")
         return 1
 
     try:
-        orders = await fetch_unfulfilled_orders()
+        orders = await fetch_pending_rentals(ready_only=True)
     except Exception:
-        logger.exception("Failed to fetch orders")
+        logger.exception("Failed to fetch rentals from Supabase")
         return 1
 
     if not orders:
-        logger.info("No unfulfilled orders found")
+        logger.info("No rentals ready to ship today")
         return 0
 
-    logger.info("Found %d unfulfilled order(s)", len(orders))
-    results = []
+    logger.info("Found %d rental(s) ready to ship", len(orders))
+    completed = 0
+    failed = 0
 
     for order in orders:
         addr = order.shipping_address
@@ -46,42 +47,78 @@ async def run_shipment_batch() -> int:
             masked_name,
         )
 
-        result = await process_shipment(order)
-        results.append(result)
+        try:
+            result = await process_shipment(order)
+        except Exception as exc:
+            logger.exception("Shipment processing crashed for rental %s", order.order_id)
+            failed += 1
+            try:
+                await notify_shipment_result(
+                    order.order_number,
+                    success=False,
+                    error=f"発送処理中に例外: {exc}",
+                )
+            except Exception:
+                logger.exception("Failed to send failure notification for %s", order.order_number)
+            continue
 
         if result.status.value == "completed":
             logger.info("  -> Completed. QR: %s", result.qr_code_path)
-            await notify_shipment_result(
-                order.order_number, success=True, qr_code_path=result.qr_code_path
-            )
+            try:
+                await update_rental_shipping_status(order.order_id, "shipped")
+            except Exception:
+                logger.exception("Failed to update shipped status for rental %s", order.order_id)
+                failed += 1
+                try:
+                    await notify_shipment_result(
+                        order.order_number,
+                        success=False,
+                        error="発送は成功しましたがDB更新に失敗しました",
+                    )
+                except Exception:
+                    logger.exception("Failed to send notification for %s", order.order_number)
+                continue
+            completed += 1
+            try:
+                await notify_shipment_result(
+                    order.order_number, success=True, qr_code_path=result.qr_code_path
+                )
+            except Exception:
+                logger.exception("Failed to send success notification for %s", order.order_number)
         else:
             logger.error("  -> Failed: %s", result.error_message)
-            await notify_shipment_result(
-                order.order_number, success=False, error=result.error_message
-            )
+            failed += 1
+            try:
+                await notify_shipment_result(
+                    order.order_number, success=False, error=result.error_message
+                )
+            except Exception:
+                logger.exception("Failed to send failure notification for %s", order.order_number)
 
-    completed = sum(1 for r in results if r.status.value == "completed")
-    failed = len(results) - completed
-    logger.info("Batch complete: %d succeeded, %d failed / %d total", completed, failed, len(results))
+    total = completed + failed
+    logger.info("Batch complete: %d succeeded, %d failed / %d total", completed, failed, total)
 
-    await notify_batch_summary(completed, failed, len(results))
+    try:
+        await notify_batch_summary(completed, failed, total)
+    except Exception:
+        logger.exception("Failed to send batch summary notification")
 
     return 0 if failed == 0 else 1
 
 
 async def check_orders() -> int:
     settings = get_settings()
-    if not settings.shopify_configured:
-        logger.error("Shopify credentials not configured")
+    if not settings.supabase_configured:
+        logger.error("Supabase credentials not configured")
         return 1
 
     try:
-        orders = await fetch_unfulfilled_orders()
+        orders = await fetch_pending_rentals(ready_only=False)
     except Exception:
-        logger.exception("Failed to fetch orders")
+        logger.exception("Failed to fetch rentals from Supabase")
         return 1
 
-    logger.info("Unfulfilled orders: %d", len(orders))
+    logger.info("Pending rentals: %d", len(orders))
     for order in orders:
         raw_name = order.shipping_address.last_name or order.shipping_address.first_name or ""
         name = f"{raw_name[:1]}***" if raw_name else "N/A"
@@ -99,14 +136,14 @@ def main() -> None:
     elif command == "health":
         settings = get_settings()
         logger.info("Configuration:")
-        logger.info("  Shopify: %s", "configured" if settings.shopify_configured else "NOT SET")
+        logger.info("  Supabase: %s", "configured" if settings.supabase_configured else "NOT SET")
         logger.info("  Kuroneko: %s", "configured" if settings.kuroneko_configured else "NOT SET")
         logger.info("  LINE Notify: %s", "configured" if settings.line_notify_configured else "NOT SET")
         code = 0
     else:
         print("Usage: python -m scripts.ship [ship|check|health]")
-        print("  ship   - Process all unfulfilled orders (default)")
-        print("  check  - List unfulfilled orders without processing")
+        print("  ship   - Supabase上の発送対象(rentals)を処理 (デフォルト)")
+        print("  check  - Supabase上のpending rentalsを一覧表示(処理なし)")
         print("  health - Check configuration status")
         code = 2
 

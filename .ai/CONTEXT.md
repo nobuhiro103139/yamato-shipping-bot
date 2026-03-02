@@ -7,156 +7,135 @@
 
 **Repository:** https://github.com/nobuhiro103139/yamato-shipping-bot
 **Owner:** @nobuhiro103139 (TechRental)
-**Purpose:** TechRental の Shopify 注文データから配送先住所を自動取得し、ヤマト運輸「宅急便をスマホで送る」(https://sp-send.kuronekoyamato.co.jp/) の Web フォームに Playwright で自動入力 → オンライン決済 → QR コード取得までを自動化するシステム。
 
-## Business Background
+**Purpose:** TechRental の運用DB（Supabase: techrental-core）に溜まっている `rentals` / `customers` を読み、ヤマト運輸「スマホで送る」(https://sp-send.kuronekoyamato.co.jp/) の Web フォームを Playwright で自動入力し、発送オペレーションを自動化する。
 
-- TechRental はレンタル機器の配送でヤマト運輸を使っている
-- B2 クラウドは契約/コスト面で利用不可
-- 「スマホで送る」の Web 版を Playwright でモバイルエミュレーション操作する方式を採用
-- 手作業をゼロにしたい。オーナーは環境構築が苦手なので、Docker 一発で動く形を要求
+## Current Direction (重要)
+
+- **データの正（source of truth）は Supabase DB**
+  - Shopifyから直接読まない（webhookで既にDBに同期されている前提）
+  - TechRental-ops の Supabase Edge Functions が Shopify webhook → DB 投入を担当
+- Bot の役割は「発送対象の抽出 → ヤマト入力 → 結果（shipped）をDBへ反映」
 
 ## Tech Stack
 
 | Layer | Technology |
 |-------|-----------|
-| Browser Automation | Playwright (Python) - iPhone mobile emulation |
-| Data Source | Shopify Admin API (GraphQL, version 2025-10) |
-| Backend | FastAPI (Python 3.12, Poetry) |
-| Frontend | React (Vite + TypeScript + Tailwind CSS) |
-| Session Management | Playwright storageState (auth.json) |
+| Browser Automation | Playwright (Python) - iPhone-like mobile emulation |
+| Data Source | Supabase PostgREST (service_role key) |
+| Notification | LINE Notify |
 | Container | Docker / Docker Compose |
+| Scheduler | GitHub Actions cron / (予定) Mac mini cron |
 
 ## Project Structure
 
 ```text
 yamato-shipping-bot/
-├── .ai/                         # AI agent context (you are here)
-│   ├── README.md                # Directory guide and reading order
-│   ├── CONTEXT.md               # Project overview (this file)
-│   ├── STATUS.md                # Development status and TODOs
-│   ├── TIPS.md                  # Accumulated development tips
-│   └── PLAYBOOK.md              # Agent playbook and workflows
-├── backend/
-│   ├── app/
-│   │   ├── main.py              # FastAPI entry point (CORS configurable)
-│   │   ├── cli.py               # CLI runner (ship/check/health)
-│   │   ├── config.py            # pydantic-settings (env vars, validation)
-│   │   ├── __main__.py          # CLI entry point
-│   │   ├── models/
-│   │   │   └── order.py         # Pydantic models (ShopifyOrder, ShippingResult, etc.)
-│   │   ├── routers/
-│   │   │   ├── orders.py        # GET /api/orders/unfulfilled
-│   │   │   └── shipping.py      # POST /api/shipping/process, init-auth
-│   │   └── services/
-│   │       ├── shopify_service.py    # Shopify GraphQL API integration
-│   │       └── yamato_automation.py  # Playwright automation engine (core)
-│   ├── .env.example
-│   └── pyproject.toml
-├── frontend/
-│   └── src/
-│       ├── App.tsx              # Main application component
-│       ├── api.ts               # Backend API client
-│       ├── types.ts             # TypeScript type definitions
-│       └── components/          # UI components
-├── Dockerfile                   # Python 3.12-slim + Playwright + non-root user
-├── docker-compose.yml           # backend (API) + runner (CLI) services
-└── README.md
+├── scripts/
+│   ├── ship.py                 # CLI entry (ship/check/health)
+│   ├── yamato_automation.py    # Yamato form automation via Playwright
+│   ├── supabase_client.py      # Fetch rentals + update shipping_status via PostgREST
+│   ├── notify.py               # LINE Notify
+│   ├── models.py               # Pydantic models
+│   └── config.py               # Settings (env)
+├── .github/workflows/ship.yml  # Daily run (10:00 JST)
+├── Dockerfile
+├── docker-compose.yml
+├── .env.example
+└── .ai/
 ```
 
 ## Import Dependency Graph
 
-Understanding the import chain is critical to avoid circular imports.
-
 ```text
-models/order.py          (defines: PackageSize, ShippingStatus, ShopifyOrder, ShippingResult, etc.)
+scripts/models.py       (Pydantic models: RentalOrder, ShippingResult, etc.)
     ^
     |  imports PackageSize
     |
-config.py                (defines: Settings, get_settings)
+scripts/config.py       (Settings, get_settings)
     ^
-    |  imports get_settings
+    |  imports get_settings, config
     |
-services/shopify_service.py    (imports: config, models)
-services/yamato_automation.py  (imports: config, models)
+scripts/supabase_client.py   (PostgREST fetch/update)
+scripts/yamato_automation.py  (Playwright automation)
+scripts/notify.py             (LINE Notify)
     ^
-    |  imports services
+    |  imports above
     |
-routers/orders.py        (imports: services)
-routers/shipping.py      (imports: services)
-    ^
-    |  includes routers
-    |
-main.py                  (FastAPI app assembly)
-cli.py                   (CLI entry point, imports services directly)
+scripts/ship.py              (CLI orchestrator)
 ```
 
-**Forbidden path:** `models/order.py` must NEVER import from `config.py` (circular import).
+**Forbidden path:** `scripts/models.py` must NEVER import `scripts/config.py` (circular import).
+
+## Data Source (Supabase)
+
+- Project: `techrental-core` (ID: `jinnapldrblkfzuypquj`)
+- Primary tables:
+  - `public.rentals` — shipping_status, shipping_date, delivery_time_slot, product_name, etc.
+  - `public.customers` — name, postal_code, prefecture, city, address_line, phone, email
+- The bot fetches rentals with:
+  - `shipping_status IN ('pending','ready_to_ship')`
+  - `rental_status IN ('pending','confirmed')`
+  - `shipping_date <= today(JST)` for ship mode
+- After success, it updates `rentals.shipping_status = 'shipped'`
 
 ## Architecture Decisions
 
 1. **Why Playwright?** Yamato Transport doesn't offer a public API. Browser automation is the only option.
-2. **Why Both Web and CLI?** Web UI for ad-hoc/interactive use; CLI for reliable scheduled batch processing.
-3. **Session Persistence:** Manual login once -> save Playwright `storageState` -> reuse for all automated runs.
-4. **Mobile Emulation:** Yamato's smartphone interface (`sp-send.kuronekoyamato.co.jp`) is more automation-friendly than desktop.
-5. **Sequential Processing:** Orders processed one-at-a-time to avoid overwhelming Yamato's servers.
+2. **Why Supabase?** TechRental-ops already syncs Shopify orders via webhook to Supabase. Reading from DB avoids redundant API calls and keeps a single source of truth.
+3. **Mobile Emulation:** Yamato's smartphone interface is more automation-friendly than desktop.
+4. **Sequential Processing:** Orders processed one-at-a-time to avoid overwhelming Yamato's servers.
 
 ## Key Data Models
 
-All defined in `backend/app/models/order.py`:
+All defined in `scripts/models.py`:
 
 | Model | Purpose | Key Fields |
 |-------|---------|------------|
-| `ShopifyOrder` | Unfulfilled order | `order_id`, `order_number`, `shipping_address`, `items`, `package_size` |
+| `RentalOrder` | Rental order from Supabase | `order_id`, `order_number`, `shipping_address`, `items`, `package_size`, `delivery_date`, `delivery_time` |
 | `ShippingResult` | Shipment outcome | `order_id`, `status`, `qr_code_path`, `error_message` |
-| `ShippingAddress` | Recipient details | `name`, `postal_code`, `province`, `city`, `address1`, `address2`, `phone` |
+| `ShippingAddress` | Recipient details | `last_name`, `first_name`, `postal_code`, `province`, `city`, `address1`, `phone` |
 | `OrderItem` | Product line item | `title`, `quantity` |
-| `PackageSize` | Enum: S, M, L, LL | Determined by total item quantity |
+| `PackageSize` | Enum: compact, S, M, L, LL | |
 | `ShippingStatus` | Enum: PENDING, PROCESSING, COMPLETED, FAILED | Tracks shipment lifecycle |
-
-## API Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/healthz` | Health check |
-| GET | `/api/orders/unfulfilled` | Fetch unfulfilled orders from Shopify |
-| POST | `/api/shipping/process` | Process single order shipment |
-| POST | `/api/shipping/init-auth` | Initialize Kuroneko Members manual login |
 
 ## CLI Commands
 
 | Command | Description |
 |---------|-------------|
-| `python -m app.cli ship` | Process all unfulfilled orders |
-| `python -m app.cli check` | List unfulfilled orders (dry run) |
-| `python -m app.cli health` | Display configuration status |
+| `python -m scripts.ship` | Ship rentals ready today (default) |
+| `python -m scripts.ship check` | List pending rentals (no automation) |
+| `python -m scripts.ship health` | Show configuration status |
 
 ## Required Secrets / Environment Variables
 
 | Variable | Description | Required |
 |----------|-------------|----------|
-| `SHOPIFY_STORE_URL` | Shopify store URL | Yes |
-| `SHOPIFY_ACCESS_TOKEN` | Shopify Admin API token | Yes |
+| `SUPABASE_URL` | Supabase Project URL | Yes |
+| `SUPABASE_SERVICE_ROLE_KEY` | PostgREST access (service_role) | Yes |
 | `KURONEKO_LOGIN_ID` | Kuroneko Members login ID | Yes |
 | `KURONEKO_PASSWORD` | Kuroneko Members password | Yes |
-| `SENDER_NAME` | Sender name | Yes |
+| `SENDER_NAME` | Sender name (address book entry name) | Yes |
 | `SENDER_POSTAL_CODE` | Sender postal code | Yes |
 | `SENDER_ADDRESS1` | Sender address line 1 | Yes |
 | `SENDER_ADDRESS2` | Sender address line 2 | No |
 | `SENDER_PHONE` | Sender phone number | Yes |
-| `HEADLESS_BROWSER` | Headless mode (default: true) | No |
-| `AUTH_STATE_PATH` | Auth state file path (default: auth.json) | No |
-| `DEFAULT_PACKAGE_SIZE` | Default package size for shipments (default: M) | No |
-| `CORS_ALLOWED_ORIGINS` | Allowed origins for CORS (default: localhost:5173,3000) | No |
+| `LINE_NOTIFY_TOKEN` | LINE Notify token | Yes |
+| `DEFAULT_PACKAGE_SIZE` | Default package size (default: M) | No |
+| `HEADLESS_BROWSER` | Playwright headless (default: true) | No |
 
 ## Operation Architecture
 
 ```text
-Development: AI agents (Devin / Claude Code / Gemini) for dev & review
-  |
-Deploy: Docker image on Mac mini
-  |
-Execution: cron scheduled or manual `docker compose run`
-  |
-Monitoring: Log review, error notification
+Shopify webhook (TechRental-ops Edge Function)
+  ↓
+Supabase DB (techrental-core)
+  ↓
+GitHub Actions / Mac mini cron (10:00 JST daily)
+  ↓
+yamato-shipping-bot (Playwright + Xvfb)
+  ↓
+Supabase: rentals.shipping_status = shipped
+  ↓
+LINE Notify (QRコード画像)
 ```

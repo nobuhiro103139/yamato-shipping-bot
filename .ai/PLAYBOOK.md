@@ -13,9 +13,8 @@
 ## Repository Setup
 
 ```bash
-cd backend
 poetry install
-poetry run playwright install chromium
+python -m playwright install --with-deps chromium
 cp .env.example .env  # Edit with credentials
 ```
 
@@ -25,11 +24,12 @@ These are hard rules. Violating them will break the system.
 
 | Rule | Reason |
 |------|--------|
-| `models/order.py` から `config.py` をインポートしない | Circular import でアプリが起動しなくなる |
+| `scripts/models.py` から `scripts/config.py` をインポートしない | Circular import で起動しなくなる |
 | ログに個人情報をマスクなしで出力しない | PII 漏洩。名前は頭文字+`***`、住所は都道府県+市区町村まで |
 | 本番の Yamato サイトで深夜にテスト実行しない | メンテナンス時間帯でフォームが応答しない |
 | `git push --force` しない | 他のコミットが消える |
 | `.env` や `auth.json` をコミットしない | クレデンシャル漏洩 |
+| Supabase の service_role key をログ/エラーに出さない | 重大な漏洩 |
 | Playwright セレクタを検証なしで本番投入しない | Yamato の HTML は予告なく変わる |
 | `CORS_ALLOWED_ORIGINS` に `*` を設定しない | セキュリティリスク |
 
@@ -59,29 +59,23 @@ These are hard rules. Violating them will break the system.
 6. Update `.ai/STATUS.md` with progress
 7. Add any discoveries to `.ai/TIPS.md`
 
-### Task: Debug Shopify Integration
+### Task: Debug Supabase Integration
 
-1. Check `SHOPIFY_STORE_URL` and `SHOPIFY_ACCESS_TOKEN` are set
-2. Run `poetry run python -m app.cli health` to verify config
-3. Run `poetry run python -m app.cli check` to test order fetching
-4. Check `backend/app/services/shopify_service.py` for the GraphQL query
-5. Verify API version matches Shopify's current supported versions (see TIPS.md tag: `shopify`, `version`)
+1. `python -m scripts.ship health` で Supabase が configured になっているか確認
+2. `python -m scripts.ship check` で pending rentals が取得できるか確認
+3. `scripts/supabase_client.py` の PostgREST クエリ条件を確認（shipping_status / rental_status / shipping_date）
 
 ### Task: Debug Yamato Automation
 
-1. Set `HEADLESS_BROWSER=false` for visible browser
-2. Check `.ai/TIPS.md` (tags: `yamato`, `playwright`) for known behaviors
-3. Run with a single test order first
-4. Check `qr_codes/` directory for screenshots (confirmation or error)
-5. If selectors fail, refer to "Fix Failing Automation Selectors" task above
+1. `HEADLESS_BROWSER=false` を設定して可視化
+2. `.ai/TIPS.md` (tags: `yamato`, `playwright`) で既知の動作を確認
+3. `qr_codes/` のスクショ（confirmation / error）で壊れたページを特定
+4. selectorが壊れた場合は `playwright codegen --device="iPhone 13" https://sp-send.kuronekoyamato.co.jp/` で再取得
 
-### Task: Update Docker Configuration
+### Task: Update Docker / GitHub Actions
 
-1. Read `Dockerfile` and `docker-compose.yml`
-2. The `backend` service runs the API server (port 8000)
-3. The `runner` service runs CLI commands
-4. Both share `yamato-data` and `yamato-qrcodes` volumes
-5. Test with `docker compose build` before pushing
+1. `Dockerfile`, `docker-compose.yml`, `.github/workflows/ship.yml` を更新
+2. 新しい env var を追加した場合は `.env.example` と `.ai/CONTEXT.md` も必ず更新
 
 ## Code Quality Checklist
 
@@ -90,24 +84,21 @@ Before creating a PR, verify:
 - [ ] Type hints on all function signatures
 - [ ] Docstrings on public functions
 - [ ] PII masking in any new log outputs
-- [ ] No circular imports introduced (check `.ai/CONTEXT.md` dependency graph)
-- [ ] New environment variables added to `.env.example`, `.ai/CONTEXT.md`, and `docker-compose.yml`
-- [ ] Any new tips added to `.ai/TIPS.md` with appropriate tags
-- [ ] `.ai/STATUS.md` updated with progress
-- [ ] Anti-patterns checklist reviewed (see above)
+- [ ] No circular imports (`models.py` -> `config.py`)
+- [ ] New env vars added to `.env.example` and `.ai/CONTEXT.md`
+- [ ] `.ai/STATUS.md` updated
+- [ ] `.ai/TIPS.md` appended (if new discoveries)
 
 ## File Modification Guide
 
 | What to change | Where |
 |----------------|-------|
-| Yamato form automation | `backend/app/services/yamato_automation.py` |
-| Shopify data fetching | `backend/app/services/shopify_service.py` |
-| Data models | `backend/app/models/order.py` |
-| API endpoints | `backend/app/routers/` |
-| Configuration | `backend/app/config.py` + `.env.example` + `docker-compose.yml` |
-| CLI commands | `backend/app/cli.py` |
+| Yamato form automation | `scripts/yamato_automation.py` |
+| Supabase data fetch/update | `scripts/supabase_client.py` |
+| Data models | `scripts/models.py` |
+| Configuration | `scripts/config.py` + `.env.example` |
+| CLI commands | `scripts/ship.py` |
 | Docker setup | `Dockerfile` + `docker-compose.yml` |
-| Frontend UI | `frontend/src/` |
 | AI context | `.ai/CONTEXT.md` |
 | Development tips | `.ai/TIPS.md` |
 | Development status | `.ai/STATUS.md` |
