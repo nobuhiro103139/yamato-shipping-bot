@@ -97,9 +97,9 @@ def _row_to_rental_order(row: dict, default_package_size: str) -> RentalOrder | 
     delivery_date = ""
     if rental_start:
         try:
-            dt = datetime.strptime(rental_start, "%Y-%m-%d")
+            dt = datetime.strptime(rental_start[:10], "%Y-%m-%d")
             delivery_date = dt.strftime("%Y%m%d")
-        except ValueError:
+        except (ValueError, TypeError):
             logger.warning("Invalid rental_start format: %s", rental_start)
 
     delivery_time = _parse_delivery_time_slot(row.get("delivery_time_slot"))
@@ -183,7 +183,10 @@ async def update_rental_shipping_status(
     headers = _build_headers(settings.supabase_service_role_key)
     headers["Prefer"] = "return=representation"
 
-    params = {"id": f"eq.{rental_id}"}
+    params = {
+        "id": f"eq.{rental_id}",
+        "shipping_status": "in.(pending,ready_to_ship)",
+    }
     body: dict[str, str] = {"shipping_status": status}
     if tracking_number:
         body["tracking_number"] = tracking_number
