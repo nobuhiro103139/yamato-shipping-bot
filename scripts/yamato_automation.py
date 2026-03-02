@@ -3,6 +3,7 @@ import re
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
 from scripts.config import Settings, get_settings
 from scripts.models import PackageSize, RentalOrder, ShippingResult, ShippingStatus
@@ -27,6 +28,13 @@ TIMEOUT_LOGIN_POLL_MS = 2000
 TIMEOUT_LOGIN_MAX_S = 60
 SLOW_MO_MS = 500
 PRODUCT_NAME_MAX_LENGTH = 17
+
+
+def _safe_url(url: str) -> str:
+    """Strip query/fragment from URL to avoid logging auth tokens."""
+    u = urlsplit(url)
+    return f"{u.scheme}://{u.netloc}{u.path}"
+
 
 DEVICE_CONFIG: dict[str, object] = {
     "user_agent": (
@@ -148,10 +156,10 @@ async def _run_yamato_automation(
             await page.wait_for_timeout(TIMEOUT_PAGE_LOAD_MS)
 
             await _login(page, settings)
-            logger.info("STEP: login done, URL=%s", page.url)
+            logger.info("STEP: login done, URL=%s", _safe_url(page.url))
 
             await _navigate_to_package_settings(page, order)
-            logger.info("STEP: navigate_to_package_settings done, URL=%s", page.url)
+            logger.info("STEP: navigate_to_package_settings done, URL=%s", _safe_url(page.url))
 
             await _fill_package_settings(page, order)
             logger.info("STEP: fill_package_settings done")
@@ -209,7 +217,7 @@ async def _login(page: "Page", settings: Settings) -> None:
 
     is_login_page = "auth.kms" in page.url or "id.kuronekoyamato.co.jp" in page.url
     if not is_login_page:
-        logger.warning("Expected login page, got: %s", page.url)
+        logger.warning("Expected login page, got: %s", _safe_url(page.url))
         logout_loc = page.locator("text=ログアウト")
         if await logout_loc.count() > 0 and await logout_loc.first.is_visible():
             logger.info("Already logged in (via unexpected flow)")
@@ -385,7 +393,7 @@ async def _fill_package_settings(page: "Page", order: RentalOrder) -> None:
 
     # 航空危険物の確認モーダルが出た場合「OK」をクリック
     ok_btn = page.get_by_text("OK", exact=True)
-    if await ok_btn.count() > 0:
+    if await ok_btn.count() > 0 and await ok_btn.last.is_visible():
         await ok_btn.last.click()
         logger.info("Dismissed aviation warning modal")
         await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
@@ -606,7 +614,7 @@ async def _confirm_sender_info(page: "Page") -> None:
         if await next_btn.count() > 0:
             await next_btn.first.click()
             await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
-            logger.debug("Sender confirm step %d, URL=%s", step, page.url)
+            logger.debug("Sender confirm step %d, URL=%s", step, _safe_url(page.url))
         else:
             break
 
@@ -633,7 +641,7 @@ async def _select_shipping_location(page: "Page", settings: Settings) -> None:
     if await next_btn.count() > 0:
         await next_btn.first.click()
         await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
-        logger.debug("Shipping location next, URL=%s", page.url)
+        logger.debug("Shipping location next, URL=%s", _safe_url(page.url))
 
 
 async def _fill_delivery_datetime(page: "Page", order: RentalOrder) -> None:
@@ -661,7 +669,7 @@ async def _fill_delivery_datetime(page: "Page", order: RentalOrder) -> None:
             if await ok_btn.count() > 0 and await ok_btn.last.is_visible():
                 await ok_btn.last.click()
                 await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
-                logger.debug("Confirmed delivery date change modal, URL=%s", page.url)
+                logger.debug("Confirmed delivery date change modal, URL=%s", _safe_url(page.url))
 
         shipping_select = page.locator(YAMATO_SELECTORS["shipping_date"])
 
@@ -670,9 +678,11 @@ async def _fill_delivery_datetime(page: "Page", order: RentalOrder) -> None:
         return
 
     delivery_select = page.locator(YAMATO_SELECTORS["delivery_date"])
-    # 時間帯 select は複数あるので、有効な(disabled でない)ものを使う
-    time_select = page.locator("select#timeToReceiveByTZone")
-    if await time_select.count() == 0:
+    # 時間帯 select は複数あるので、先頭の有効なものを使う
+    time_select_all = page.locator("select#timeToReceiveByTZone")
+    if await time_select_all.count() > 0:
+        time_select = time_select_all.first
+    else:
         time_select = page.locator(YAMATO_SELECTORS["delivery_time"]).first
 
     ship_dates = [

@@ -83,7 +83,7 @@ def _row_to_rental_order(row: dict, default_package_size: str) -> RentalOrder | 
 
     last_name, first_name = _split_name(customer.get("name", ""))
 
-    phone = customer.get("phone", "")
+    phone = str(customer.get("phone") or "").strip()
     # DB stores phone without leading 0 — restore it for domestic numbers
     if phone and not phone.startswith("0") and not phone.startswith("+"):
         phone = "0" + phone
