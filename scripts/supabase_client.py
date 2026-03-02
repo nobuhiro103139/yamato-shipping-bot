@@ -53,7 +53,7 @@ def _split_name(full_name: str) -> tuple[str, str]:
 
     Handles both Japanese (e.g. '田中 希明') and Western (e.g. 'ISHII YUNA') formats.
     """
-    if not full_name:
+    if not full_name or not full_name.strip():
         return ("", "")
     parts = full_name.strip().split(None, 1)
     if len(parts) == 2:
@@ -110,12 +110,22 @@ def _row_to_rental_order(row: dict, default_package_size: str) -> RentalOrder | 
         logger.warning("Rental row missing id, skipping: order_number=%s", order_number)
         return None
 
+    try:
+        package_size = PackageSize(default_package_size)
+    except ValueError:
+        logger.warning(
+            "Invalid default_package_size '%s'; fallback to '%s'",
+            default_package_size,
+            PackageSize.M.value,
+        )
+        package_size = PackageSize.M
+
     return RentalOrder(
         order_id=rental_id,
         order_number=order_number,
         shipping_address=address,
         items=[OrderItem(title=product_name, quantity=1)],
-        package_size=PackageSize(default_package_size),
+        package_size=package_size,
         delivery_date=delivery_date,
         delivery_time=delivery_time,
         customer_email=customer.get("email", ""),

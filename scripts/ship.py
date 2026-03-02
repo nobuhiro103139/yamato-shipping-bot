@@ -85,7 +85,10 @@ async def run_shipment_batch() -> int:
     total = completed + failed
     logger.info("Batch complete: %d succeeded, %d failed / %d total", completed, failed, total)
 
-    await notify_batch_summary(completed, failed, total)
+    try:
+        await notify_batch_summary(completed, failed, total)
+    except Exception:
+        logger.exception("Failed to send batch summary notification")
 
     return 0 if failed == 0 else 1
 
