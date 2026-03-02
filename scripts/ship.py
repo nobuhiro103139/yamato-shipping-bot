@@ -34,7 +34,8 @@ async def run_shipment_batch() -> int:
         return 0
 
     logger.info("Found %d rental(s) ready to ship", len(orders))
-    results = []
+    completed = 0
+    failed = 0
 
     for order in orders:
         addr = order.shipping_address
@@ -47,7 +48,6 @@ async def run_shipment_batch() -> int:
         )
 
         result = await process_shipment(order)
-        results.append(result)
 
         if result.status.value == "completed":
             logger.info("  -> Completed. QR: %s", result.qr_code_path)
@@ -55,26 +55,37 @@ async def run_shipment_batch() -> int:
                 await update_rental_shipping_status(order.order_id, "shipped")
             except Exception:
                 logger.exception("Failed to update shipped status for rental %s", order.order_id)
-                await notify_shipment_result(
-                    order.order_number,
-                    success=False,
-                    error="発送は成功しましたがDB更新に失敗しました",
-                )
+                failed += 1
+                try:
+                    await notify_shipment_result(
+                        order.order_number,
+                        success=False,
+                        error="発送は成功しましたがDB更新に失敗しました",
+                    )
+                except Exception:
+                    logger.exception("Failed to send notification for %s", order.order_number)
                 continue
-            await notify_shipment_result(
-                order.order_number, success=True, qr_code_path=result.qr_code_path
-            )
+            completed += 1
+            try:
+                await notify_shipment_result(
+                    order.order_number, success=True, qr_code_path=result.qr_code_path
+                )
+            except Exception:
+                logger.exception("Failed to send success notification for %s", order.order_number)
         else:
             logger.error("  -> Failed: %s", result.error_message)
-            await notify_shipment_result(
-                order.order_number, success=False, error=result.error_message
-            )
+            failed += 1
+            try:
+                await notify_shipment_result(
+                    order.order_number, success=False, error=result.error_message
+                )
+            except Exception:
+                logger.exception("Failed to send failure notification for %s", order.order_number)
 
-    completed = sum(1 for r in results if r.status.value == "completed")
-    failed = len(results) - completed
-    logger.info("Batch complete: %d succeeded, %d failed / %d total", completed, failed, len(results))
+    total = completed + failed
+    logger.info("Batch complete: %d succeeded, %d failed / %d total", completed, failed, total)
 
-    await notify_batch_summary(completed, failed, len(results))
+    await notify_batch_summary(completed, failed, total)
 
     return 0 if failed == 0 else 1
 
