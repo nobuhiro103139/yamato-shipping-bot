@@ -1,13 +1,13 @@
 # Yamato Shipping Bot
 
-TechRental の配送自動化システム。Shopify の注文データからヤマト運輸「スマホで送る」のフォームに自動入力し、発送処理を自動化します。
+TechRental の配送自動化システム。**Supabase（techrental-core）の rentals / customers テーブルをデータソースに**、ヤマト運輸「スマホで送る」のフォームへ Playwright で自動入力し、発送作業を自動化します。
 
 ## 技術スタック
 
 | レイヤー | 技術 |
 |---------|------|
 | ブラウザ自動操作 | Playwright (Python) + Xvfb (headful) |
-| データ取得 | Shopify Admin API (GraphQL) |
+| データ取得 | Supabase PostgREST（`rentals`, `customers`） |
 | 通知 | LINE Notify (QRコード画像送信) |
 | 実行環境 | GitHub Actions (cron) / Docker |
 
@@ -18,7 +18,7 @@ yamato-shipping-bot/
 ├── scripts/                    # メインコード
 │   ├── ship.py                 # エントリーポイント (ship/check/health)
 │   ├── yamato_automation.py    # Playwright 自動操作
-│   ├── shopify_client.py       # Shopify API 連携
+│   ├── supabase_client.py      # Supabase PostgREST 連携（rentals取得・status更新）
 │   ├── notify.py               # LINE Notify 連携
 │   ├── models.py               # Pydantic モデル
 │   └── config.py               # 環境設定
@@ -50,7 +50,7 @@ python -m playwright install --with-deps chromium
 xvfb-run --auto-servernum --server-args="-screen 0 1280x960x24" \
   python -m scripts.ship
 
-# 未発送注文の確認のみ
+# pending rentals の確認のみ
 python -m scripts.ship check
 
 # 設定確認
@@ -60,17 +60,17 @@ python -m scripts.ship health
 ### 3. Docker で実行
 
 ```bash
-# バッチ処理（全未発送注文を処理）
+# バッチ処理（Supabase上の発送対象を処理）
 docker compose run --rm runner ship
 
-# 未発送注文の確認のみ
+# pending rentals の確認のみ
 docker compose run --rm runner check
 ```
 
 ### 4. GitHub Actions (自動実行)
 
 GitHub Secrets に以下を設定すれば毎日 10:00 JST に自動実行されます:
-- `SHOPIFY_STORE_URL`, `SHOPIFY_ACCESS_TOKEN`
+- `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`
 - `KURONEKO_LOGIN_ID`, `KURONEKO_PASSWORD`
 - `SENDER_NAME`
 - `SENDER_POSTAL_CODE`, `SENDER_ADDRESS1`, `SENDER_ADDRESS2` (任意), `SENDER_PHONE`
@@ -83,25 +83,26 @@ GitHub Secrets に以下を設定すれば毎日 10:00 JST に自動実行され
 
 | コマンド | 説明 |
 |---------|------|
-| `python -m scripts.ship` | 全未発送注文を自動発送処理 (デフォルト) |
-| `python -m scripts.ship check` | 未発送注文の一覧表示 |
+| `python -m scripts.ship` | Supabase上の発送対象(rentals)を自動発送処理 (デフォルト) |
+| `python -m scripts.ship check` | pending rentals の一覧表示 |
 | `python -m scripts.ship health` | 設定状態の確認 |
 
 ## 処理フロー
 
-1. Shopify Admin API (GraphQL) で未発送注文を取得
+1. Supabase DB（`rentals.shipping_status IN ('pending','ready_to_ship')`）から発送対象を取得
 2. Playwright が Xvfb + headful モードでヤマト「スマホで送る」にアクセス
 3. 毎回フレッシュログイン (クロネコメンバーズ SSO)
 4. フォームに自動入力 (お届け先、依頼主、品名、サイズ、配達日時)
-5. 下書き保存 + 確認画面スクリーンショット
-6. LINE Notify で QRコード画像をスマホに送信
+5. 下書き保存 + 確認画面スクリーンショット（`qr_codes/`）
+6. Supabase の `rentals.shipping_status` を `shipped` に更新
+7. LINE Notify で QRコード画像をスマホに送信
 
 ## 環境変数
 
 | 変数名 | 説明 |
 |--------|------|
-| `SHOPIFY_STORE_URL` | Shopify ストア URL |
-| `SHOPIFY_ACCESS_TOKEN` | Shopify Admin API アクセストークン |
+| `SUPABASE_URL` | Supabase Project URL（例: `https://xxxx.supabase.co`） |
+| `SUPABASE_SERVICE_ROLE_KEY` | Supabase service_role key |
 | `KURONEKO_LOGIN_ID` | クロネコメンバーズ ID |
 | `KURONEKO_PASSWORD` | クロネコメンバーズ パスワード |
 | `SENDER_NAME` | 依頼主の氏名 (アドレス帳検索用) |
@@ -109,17 +110,22 @@ GitHub Secrets に以下を設定すれば毎日 10:00 JST に自動実行され
 | `SENDER_ADDRESS1` | 依頼主の住所 |
 | `SENDER_ADDRESS2` | 依頼主の建物名等 |
 | `SENDER_PHONE` | 依頼主の電話番号 |
-| `DEFAULT_PACKAGE_SIZE` | デフォルト荷物サイズ (S/M/L/LL) |
+| `DEFAULT_PACKAGE_SIZE` | デフォルト荷物サイズ (S/M/L/LL/compact) |
+| `HEADLESS_BROWSER` | Playwright headless (default: true) |
 | `LINE_NOTIFY_TOKEN` | LINE Notify アクセストークン |
 
 ## 運用アーキテクチャ
 
 ```text
-Shopify (未発送注文)
+Shopify webhook（別系統: TechRental-ops）
   ↓
-GitHub Actions (毎日 10:00 JST cron)
+Supabase DB (techrental-core)
+  ↓
+GitHub Actions / Mac mini cron (毎日 10:00 JST)
   ↓
 Playwright + Xvfb (ヤマト「スマホで送る」自動操作)
+  ↓
+Supabase: rentals.shipping_status = shipped
   ↓
 LINE Notify (QRコード画像をスマホへ送信)
   ↓

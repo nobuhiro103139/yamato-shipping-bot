@@ -39,7 +39,12 @@ class OrderItem(BaseModel):
     quantity: int
 
 
-class ShopifyOrder(BaseModel):
+class RentalOrder(BaseModel):
+    """A rental order ready for Yamato shipping automation.
+
+    Populated from Supabase ``rentals`` + ``customers`` tables.
+    """
+
     order_id: str
     order_number: str
     shipping_address: ShippingAddress

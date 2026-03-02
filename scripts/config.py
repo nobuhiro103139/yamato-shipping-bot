@@ -7,9 +7,8 @@ from scripts.models import PackageSize
 
 
 class Settings(BaseSettings):
-    shopify_store_url: str = ""
-    shopify_client_id: str = ""
-    shopify_client_secret: str = ""
+    supabase_url: str = ""
+    supabase_service_role_key: str = ""
     kuroneko_login_id: str = ""
     kuroneko_password: str = ""
     sender_name: str = ""
@@ -19,6 +18,7 @@ class Settings(BaseSettings):
     sender_phone: str = ""
     default_package_size: str = "M"
     line_notify_token: str = ""
+    headless_browser: bool = True
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
@@ -31,8 +31,8 @@ class Settings(BaseSettings):
         return v
 
     @property
-    def shopify_configured(self) -> bool:
-        return bool(self.shopify_store_url and self.shopify_client_id and self.shopify_client_secret)
+    def supabase_configured(self) -> bool:
+        return bool(self.supabase_url and self.supabase_service_role_key)
 
     @property
     def kuroneko_configured(self) -> bool:

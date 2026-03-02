@@ -1,81 +1,57 @@
 # Development Status
 
 > Current phase: **Phase 1 - PoC (Proof of Concept)**
-> Last updated: 2026-02-09
+> Last updated: 2026-03-02
 
 ## Completed
 
-- [x] Shopify GraphQL API service for fetching unfulfilled orders
-- [x] Playwright-based Yamato form automation skeleton
-- [x] Docker setup (non-root user, Playwright Chromium bundled)
+- [x] Playwright-based Yamato form automation (mobile emulation)
+- [x] Docker setup (Playwright Chromium bundled)
 - [x] CLI (ship/check/health commands)
-- [x] PII masking in log outputs
-- [x] CORS configuration (env-based)
-- [x] Type hints and docstrings
-- [x] PR #1 (Docker + CLI) merged
-- [x] PR #2 (Code quality improvements) merged
-- [x] `.ai/` directory with project context, tips, playbook, and status
+- [x] PII masking in log outputs (names masked)
+- [x] GitHub Actions daily run workflow
+- [x] **Supabase (techrental-core) 直結に切り替え（rentals/customers を source of truth に変更）**
+  - Shopify API 経由の取得を廃止（`shopify_client.py` 削除）
+  - `supabase_client.py` 新規作成（PostgREST fetch + shipping_status update）
+  - 成功時に `rentals.shipping_status = shipped` を自動更新
+  - **Why:** TechRental-ops で既に Shopify webhook → Supabase 同期が動いており、DB に全データが揃っていた。Shopify API を直接叩くのは冗長だった。
 
 ## Next TODO (Priority Order)
 
 ### High Priority
 
-- [ ] **Yamato form real-site selector verification**
-  - **Why:** PoC の成功に必須。セレクタが動かなければ自動化は何も始まらない
-  - All CSS selectors in `yamato_automation.py` are best-guess estimates
-  - Need to use `playwright codegen --device="iPhone 13"` on the real Yamato site
-  - Selectors to verify: postal code input, name fields, address fields, phone input, submit buttons
+- [ ] **Yamatoサイトの実動作確認（Mac mini）**
+  - **Why:** Playwrightの自動化はサイト側の変更で壊れる。PoC成立の必須条件
+  - 直近の発送対象を1件だけで試す（夜間は避ける）
 
-- [ ] **Shopify API real-environment test**
-  - **Why:** データ取得が正しく動くことの検証なしに、下流の自動入力は開発できない
-  - Set `SHOPIFY_STORE_URL` and `SHOPIFY_ACCESS_TOKEN` with real credentials
-  - Run `python -m app.cli check` to verify order fetching works
-  - Validate the GraphQL query response structure
-  - Note: Currently using API version `2025-10` (supported until Oct 2026). Latest is `2026-01`.
+- [ ] **決済ステップ実装**
+  - **Why:** 現状は「下書き保存＋確認画面スクショ」まで。完全自動化には決済→QR取得が必要
 
-- [ ] **Kuroneko Members login flow**
-  - **Why:** 認証なしではヤマトサイトにアクセスできず、セレクタ検証もできない
-  - Test `save_auth_state()` for initial manual login -> auth.json save
-  - Verify session persistence across automation runs
-  - Handle session expiration gracefully
+- [ ] **Supabase更新の整合性強化**
+  - **Why:** 二重発送や誤更新を防ぐ
+  - `shipped` 更新時に `rental_status` / `shipping_date` 等の条件を追加検討
 
 ### Medium Priority
 
-- [ ] **Payment step implementation**
-  - **Why:** 現在は決済前のスクリーンショットまで。完全自動化にはこのステップが必要
-  - Currently stops at pre-payment screenshot
-  - Need to implement: payment button click -> QR code capture
-  - Requires real Yamato site testing
+- [ ] **shipping_status='ready_to_ship' の運用整理**
+  - **Why:** OPS側の状態遷移と bot の抽出条件を一致させる
 
-- [ ] **Frontend (React) completion**
-  - **Why:** オペレーターが手動で確認・実行できる UI がないと運用に乗らない
-  - Basic components exist but are not connected to backend
-  - Need: order list display, ship button, status updates, QR code viewer
+- [ ] **失敗時のリトライ/隔離**
+  - **Why:** 運用安定化（同一注文での無限リトライ回避）
 
 ### Low Priority
 
-- [ ] **Mac mini deployment**
-  - **Why:** 最終的な本番環境。PoC 完了後に着手
-  - Docker image deployment to Mac mini
-  - cron job setup for daily 10:00 AM execution
-  - Log rotation and monitoring
-
-- [ ] **Error handling improvements**
-  - **Why:** 本番運用の安定性向上。PoC 段階では後回し可
-  - Retry logic for transient failures
-  - Better error messages for common failure modes
-  - Email/Slack notification on failure
+- [ ] **Mac mini デプロイ手順の固定化**
+  - **Why:** 本番の最終形。Docker/cron/ログ管理を確立
 
 ## Known Issues
 
-- CSS selectors in `yamato_automation.py` are unverified (may not match actual Yamato HTML)
-- Frontend is scaffolded but not functional
-- No automated tests exist yet
-- Shopify API version `2025-10` is one version behind latest (`2026-01`), but still supported until Oct 2026
+- 決済ステップ未実装（下書き保存で停止）
+- 自動テストなし
+- CSS selectors は実サイト検証済みだが、ヤマト側の変更で壊れる可能性あり
 
 ## Phase Roadmap
 
-1. **Phase 1 (Current):** PoC - Verify automation works end-to-end with real Yamato site
-2. **Phase 2:** Production - Complete payment flow, error handling, monitoring
-3. **Phase 3:** Dashboard - Finish React frontend, connect to backend APIs
-4. **Phase 4:** Deployment - Mac mini setup, cron scheduling, operational monitoring
+1. **Phase 1 (Current):** PoC - Supabase連携完了、実サイトでのE2E検証
+2. **Phase 2:** Production - 決済フロー完成、エラーハンドリング、監視
+3. **Phase 3:** Deployment - Mac mini本番運用、cron、ログローテーション

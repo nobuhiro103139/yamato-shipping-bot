@@ -5,7 +5,7 @@ from datetime import datetime
 
 from scripts.config import get_settings
 from scripts.notify import notify_batch_summary, notify_shipment_result
-from scripts.shopify_client import fetch_unfulfilled_orders
+from scripts.supabase_client import fetch_pending_rentals, update_rental_shipping_status
 from scripts.yamato_automation import process_shipment
 
 logging.basicConfig(
@@ -19,21 +19,21 @@ async def run_shipment_batch() -> int:
     settings = get_settings()
     logger.info("Starting shipment batch at %s", datetime.now().isoformat())
 
-    if not settings.shopify_configured:
-        logger.error("Shopify credentials not configured")
+    if not settings.supabase_configured:
+        logger.error("Supabase credentials not configured")
         return 1
 
     try:
-        orders = await fetch_unfulfilled_orders()
+        orders = await fetch_pending_rentals(ready_only=True)
     except Exception:
-        logger.exception("Failed to fetch orders")
+        logger.exception("Failed to fetch rentals from Supabase")
         return 1
 
     if not orders:
-        logger.info("No unfulfilled orders found")
+        logger.info("No rentals ready to ship today")
         return 0
 
-    logger.info("Found %d unfulfilled order(s)", len(orders))
+    logger.info("Found %d rental(s) ready to ship", len(orders))
     results = []
 
     for order in orders:
@@ -51,6 +51,7 @@ async def run_shipment_batch() -> int:
 
         if result.status.value == "completed":
             logger.info("  -> Completed. QR: %s", result.qr_code_path)
+            await update_rental_shipping_status(order.order_id, "shipped")
             await notify_shipment_result(
                 order.order_number, success=True, qr_code_path=result.qr_code_path
             )
@@ -71,17 +72,17 @@ async def run_shipment_batch() -> int:
 
 async def check_orders() -> int:
     settings = get_settings()
-    if not settings.shopify_configured:
-        logger.error("Shopify credentials not configured")
+    if not settings.supabase_configured:
+        logger.error("Supabase credentials not configured")
         return 1
 
     try:
-        orders = await fetch_unfulfilled_orders()
+        orders = await fetch_pending_rentals(ready_only=False)
     except Exception:
-        logger.exception("Failed to fetch orders")
+        logger.exception("Failed to fetch rentals from Supabase")
         return 1
 
-    logger.info("Unfulfilled orders: %d", len(orders))
+    logger.info("Pending rentals: %d", len(orders))
     for order in orders:
         raw_name = order.shipping_address.last_name or order.shipping_address.first_name or ""
         name = f"{raw_name[:1]}***" if raw_name else "N/A"
@@ -99,14 +100,14 @@ def main() -> None:
     elif command == "health":
         settings = get_settings()
         logger.info("Configuration:")
-        logger.info("  Shopify: %s", "configured" if settings.shopify_configured else "NOT SET")
+        logger.info("  Supabase: %s", "configured" if settings.supabase_configured else "NOT SET")
         logger.info("  Kuroneko: %s", "configured" if settings.kuroneko_configured else "NOT SET")
         logger.info("  LINE Notify: %s", "configured" if settings.line_notify_configured else "NOT SET")
         code = 0
     else:
         print("Usage: python -m scripts.ship [ship|check|health]")
-        print("  ship   - Process all unfulfilled orders (default)")
-        print("  check  - List unfulfilled orders without processing")
+        print("  ship   - Supabase上の発送対象(rentals)を処理 (デフォルト)")
+        print("  check  - Supabase上のpending rentalsを一覧表示（処理なし）")
         print("  health - Check configuration status")
         code = 2
 

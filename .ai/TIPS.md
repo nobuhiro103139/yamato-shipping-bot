@@ -85,20 +85,23 @@ If no category fits, create a new `## Category` section.
 - This auto-fills `address1` (prefecture) and `address2` (city)
 - If address fields aren't populated, increase this timeout
 
-## Shopify Integration
+## Supabase Integration
 
-### [2026-02-09] GraphQL API Version
-**Tags:** `shopify`, `api`, `version`
-- Codebase uses version `2025-10` (defined as `SHOPIFY_API_VERSION` in `shopify_service.py`)
-- Latest stable: `2026-01` (released Jan 2026)
-- `2025-10` remains supported until Oct 2026
-- Check https://shopify.dev/docs/api/usage/versioning for deprecation schedule
+### [2026-03-02] Supabase PostgREST で直接 rentals を取得する方式に変更
+**Tags:** `supabase`, `architecture`, `data-source`
+- Shopify API 経由を廃止し、Supabase PostgREST で `rentals` + `customers` を直接取得
+- Project: `techrental-core` (ID: `jinnapldrblkfzuypquj`)
+- 取得条件: `shipping_status IN ('pending','ready_to_ship')` AND `rental_status IN ('pending','confirmed')`
+- ship コマンド: さらに `shipping_date <= today(JST)` で当日分に絞る
+- 成功後に `PATCH rentals` で `shipping_status = 'shipped'` に更新
+- `customers` テーブルの `name` は姓名一体（例: '田中 太郎'）→ スペース区切りで split
 
-### [2026-02-09] Package Size Logic
-**Tags:** `shopify`, `business-logic`, `package`
-- Determined by total item quantity in the order
-- 1 item -> S, 2-3 items -> M, 4-5 items -> L, 6+ items -> LL
-- Defined via `PACKAGE_SIZE_THRESHOLDS` in `shopify_service.py`
+### [2026-03-02] delivery_time_slot のマッピング
+**Tags:** `supabase`, `yamato`, `business-logic`
+- DB上は人間可読な文字列（例: `8:00~12:00`, `14:00~16:00`）
+- ヤマトフォームの radio value（`1`, `3`, `4` 等）に変換が必要
+- カンマ区切りで複数指定されている場合は最初のスロットを採用
+- `指定なし` は `DeliveryTimeSlot.NONE` にマッピング
 
 ## Code Architecture
 

@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from scripts.config import Settings, get_settings
-from scripts.models import PackageSize, ShopifyOrder, ShippingResult, ShippingStatus
+from scripts.models import PackageSize, RentalOrder, ShippingResult, ShippingStatus
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +86,7 @@ YAMATO_SELECTORS = {
 }
 
 
-async def process_shipment(order: ShopifyOrder) -> ShippingResult:
+async def process_shipment(order: RentalOrder) -> ShippingResult:
     settings = get_settings()
 
     if not settings.kuroneko_configured:
@@ -120,13 +120,13 @@ async def process_shipment(order: ShopifyOrder) -> ShippingResult:
 
 
 async def _run_yamato_automation(
-    order: ShopifyOrder, settings: Settings
+    order: RentalOrder, settings: Settings
 ) -> ShippingResult:
     from playwright.async_api import async_playwright
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(
-            headless=False,
+            headless=settings.headless_browser,
             slow_mo=SLOW_MO_MS,
             args=["--disable-blink-features=AutomationControlled"],
         )
@@ -259,7 +259,7 @@ async def _login(page: "Page", settings: Settings) -> None:
         raise RuntimeError("Login failed: could not establish session on sp-send")
 
 
-async def _navigate_to_package_settings(page: "Page", order: ShopifyOrder) -> None:
+async def _navigate_to_package_settings(page: "Page", order: RentalOrder) -> None:
     normal = page.get_by_role("link", name="通常の荷物を送る")
     if await normal.count() > 0:
         await normal.first.click()
@@ -292,7 +292,7 @@ async def _navigate_to_package_settings(page: "Page", order: ShopifyOrder) -> No
     await _check_session_error(page)
 
 
-async def _fill_package_settings(page: "Page", order: ShopifyOrder) -> None:
+async def _fill_package_settings(page: "Page", order: RentalOrder) -> None:
     radio_value = PACKAGE_SIZE_TO_RADIO_VALUE.get(order.package_size, "S")
     await page.evaluate(
         """(targetValue) => {
@@ -380,7 +380,7 @@ async def _select_direct_address_input(page: "Page") -> None:
         await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
 
 
-async def _fill_recipient_info(page: "Page", order: ShopifyOrder) -> None:
+async def _fill_recipient_info(page: "Page", order: RentalOrder) -> None:
     addr = order.shipping_address
 
     await _fill_input(page, YAMATO_SELECTORS["recipient_last_name"], addr.last_name)
@@ -508,7 +508,7 @@ async def _select_shipping_location(page: "Page") -> None:
             return
 
 
-async def _fill_delivery_datetime(page: "Page", order: ShopifyOrder) -> None:
+async def _fill_delivery_datetime(page: "Page", order: RentalOrder) -> None:
     if not order.delivery_date:
         next_btn = page.locator(YAMATO_SELECTORS["next_btn"])
         if await next_btn.count() > 0:
