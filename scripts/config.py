@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     sender_address2: str = ""
     sender_phone: str = ""
     default_package_size: str = "M"
+    preferred_shipping_location: str = ""
     line_notify_token: str = ""
     headless_browser: bool = True
 

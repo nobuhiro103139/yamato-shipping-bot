@@ -1,8 +1,9 @@
 name: Daily Shipping
 
 on:
-  schedule:
-    - cron: '0 1 * * *'  # 毎日 10:00 JST
+  # schedule:
+  #   - cron: '0 1 * * *'  # 毎日 10:00 JST
+  # ↑ GHA上ではヤマトサイトが弾かれるため無効化。Mac mini で実行する。
   workflow_dispatch:
 
 concurrency:
