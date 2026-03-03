@@ -23,6 +23,7 @@ SUPABASE_REQUEST_TIMEOUT = 30.0
 RENTALS_SELECT = (
     "id,shopify_order_number,product_name,rental_start,rental_end,"
     "shipping_date,delivery_time_slot,"
+    "shipping_name,shipping_postal_code,shipping_prefecture,shipping_city,shipping_address_line,shipping_phone,"
     "customers(name,postal_code,prefecture,city,address_line,phone,email)"
 )
 
@@ -81,20 +82,28 @@ def _row_to_rental_order(row: dict, default_package_size: str) -> RentalOrder | 
         )
         return None
 
-    last_name, first_name = _split_name(customer.get("name", ""))
+    shipping_name = str(row.get("shipping_name") or "").strip()
+    customer_name = str(customer.get("name") or "").strip()
+    name_source = shipping_name or customer_name
+    last_name, first_name = _split_name(name_source)
 
-    phone = str(customer.get("phone") or "").strip()
+    phone = str(row.get("shipping_phone") or customer.get("phone") or "").strip()
     # DB stores phone without leading 0 — restore it for domestic numbers
     if phone and not phone.startswith("0") and not phone.startswith("+"):
         phone = "0" + phone
 
+    postal_code = row.get("shipping_postal_code") or customer.get("postal_code") or ""
+    prefecture = row.get("shipping_prefecture") or customer.get("prefecture") or ""
+    city = row.get("shipping_city") or customer.get("city") or ""
+    address_line = row.get("shipping_address_line") or customer.get("address_line") or ""
+
     address = ShippingAddress(
         last_name=last_name,
         first_name=first_name,
-        postal_code=customer.get("postal_code", ""),
-        province=customer.get("prefecture", ""),
-        city=customer.get("city", ""),
-        address1=customer.get("address_line", ""),
+        postal_code=postal_code,
+        province=prefecture,
+        city=city,
+        address1=address_line,
         phone=phone,
     )
 
