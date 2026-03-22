@@ -1,5 +1,6 @@
 import logging
 import re
+import unicodedata
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -421,69 +422,166 @@ async def _fill_recipient_info(page: "Page", order: RentalOrder) -> None:
         await search_btn.first.click()
         await page.wait_for_timeout(5000)  # ポップアップ表示を十分待つ
 
-    # 丁目選択ポップアップの処理
+    # 住所選択ポップアップの処理 (丁目 or 字・町名)
     chome_to_select = addr.chome
     banchi_value = addr.banchi
     go_value = addr.go
     address_for_field = addr.address1
 
-    # chome が空の場合、address1 から丁目・番地・号を解析
-    if not chome_to_select and addr.address1:
-        match = re.search(r"(\d+)-(\d+)(?:-(\d+))?$", addr.address1)
-        if match:
-            chome_to_select = match.group(1)
-            banchi_value = match.group(2)
-            go_value = match.group(3) or ""
-            address_for_field = ""
-            logger.info(
-                "Parsed address: chome=%s, banchi=%s, go=%s",
-                chome_to_select, banchi_value, go_value,
+    # Step 1: Detect any address-selection popup in iframe
+    # Yamato shows either numbered 丁目 options OR named 字/町 sections
+    popup_frame = None
+    all_popup_options: list[str] = []
+    chome_options: list[str] = []  # subset: options containing 丁目
+    for frame in page.frames:
+        if frame == page.main_frame:
+            continue
+        try:
+            frame_text = await frame.locator("body").inner_text(timeout=2000)
+            if "選択してください" in frame_text or "丁目" in frame_text:
+                popup_frame = frame
+                all_popup_options = await frame.evaluate("""() => {
+                    const links = document.querySelectorAll('a');
+                    return Array.from(links)
+                        .map(a => a.textContent.trim())
+                        .filter(t => t.length > 0);
+                }""")
+                chome_options = [o for o in all_popup_options if "丁目" in o]
+                logger.info(
+                    "Address popup found: %d options total, %d chome. Options: %s",
+                    len(all_popup_options), len(chome_options), all_popup_options,
+                )
+                break
+        except Exception:
+            continue
+
+    has_popup = popup_frame is not None and len(all_popup_options) > 0
+    has_chome_options = len(chome_options) > 0
+
+    # Step 2: Determine what to click and how to fill remaining fields
+    popup_clicked = False
+
+    if has_popup and has_chome_options:
+        # Numbered 丁目 popup — parse address1 for chome-banchi-go
+        if not chome_to_select and addr.address1:
+            match = re.search(r"(\d+)-(\d+)(?:-(\d+))?$", addr.address1)
+            if match:
+                candidate_chome = match.group(1)
+                fullwidth_candidate = candidate_chome.translate(
+                    str.maketrans("0123456789", "０１２３４５６７８９")
+                )
+                candidate_text = f"{fullwidth_candidate}丁目"
+                if any(candidate_text in opt for opt in chome_options):
+                    chome_to_select = candidate_chome
+                    banchi_value = match.group(2)
+                    go_value = match.group(3) or ""
+                    address_for_field = ""
+                    logger.info(
+                        "Parsed chome=%s, banchi=%s, go=%s (confirmed in popup)",
+                        chome_to_select, banchi_value, go_value,
+                    )
+                else:
+                    logger.info(
+                        "Trailing '%s' not in chome options; treating as raw address",
+                        candidate_chome,
+                    )
+
+        if chome_to_select:
+            fullwidth_chome = chome_to_select.translate(
+                str.maketrans("0123456789", "０１２３４５６７８９")
             )
-
-    # 丁目選択: iframe 内のポップアップで全角数字を使う
-    if chome_to_select:
-        # 半角→全角変換 (Yamato uses full-width numbers: １丁目, ２丁目, etc.)
-        fullwidth_chome = chome_to_select.translate(
-            str.maketrans("0123456789", "０１２３４５６７８９")
-        )
-        target_text = f"{fullwidth_chome}丁目"
-        # 半角版もフォールバック用に用意
-        target_text_half = f"{chome_to_select}丁目"
-        chome_clicked = False
-
-        # iframe を検索 (chome popup は常に iframe 内)
-        for frame in page.frames:
-            if frame == page.main_frame:
-                continue
-            try:
-                frame_text = await frame.locator("body").inner_text(timeout=2000)
-                if "丁目" not in frame_text:
-                    continue
-                for txt in [target_text, target_text_half]:
-                    for loc in [
-                        frame.get_by_text(txt, exact=True),
-                        frame.get_by_role("link", name=txt),
-                        frame.locator(f"a:has-text('{txt}')"),
-                    ]:
-                        try:
-                            if await loc.count() > 0:
-                                await loc.first.click()
-                                await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
-                                logger.info("Selected chome: %s", txt)
-                                chome_clicked = True
-                                break
-                        except Exception:
-                            continue
-                    if chome_clicked:
-                        break
-                if chome_clicked:
+            for txt in [f"{fullwidth_chome}丁目", f"{chome_to_select}丁目"]:
+                for loc in [
+                    popup_frame.get_by_text(txt, exact=True),
+                    popup_frame.get_by_role("link", name=txt),
+                    popup_frame.locator(f"a:has-text('{txt}')"),
+                ]:
+                    try:
+                        if await loc.count() > 0:
+                            await loc.first.click()
+                            await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
+                            logger.info("Selected chome: %s", txt)
+                            popup_clicked = True
+                            break
+                    except Exception:
+                        continue
+                if popup_clicked:
                     break
-            except Exception:
-                continue
+            if not popup_clicked:
+                logger.warning("Could not click chome: %s", chome_to_select)
 
-        if not chome_clicked:
-            logger.warning("Could not find chome option: %s", target_text)
+    elif has_popup and not has_chome_options:
+        # Named 字/町 section popup (e.g., 中荒古, 大通, etc.)
+        # Try to match address1 against the options
+        if addr.address1:
+            matched_option = None
+            remaining_address = addr.address1
 
+            # Try each popup option as a prefix/substring of address1
+            # Sort by length descending to prefer longest match
+            sorted_options = sorted(all_popup_options, key=len, reverse=True)
+            for opt in sorted_options:
+                if opt in addr.address1:
+                    matched_option = opt
+                    # Extract the part after the matched option
+                    idx = addr.address1.index(opt) + len(opt)
+                    remaining_address = addr.address1[idx:]
+                    break
+
+            if matched_option:
+                logger.info(
+                    "Matched address section '%s' in popup; remaining='%s'",
+                    matched_option, remaining_address,
+                )
+                loc = popup_frame.get_by_text(matched_option, exact=True)
+                if await loc.count() > 0:
+                    await loc.first.click()
+                    await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
+                    popup_clicked = True
+                    logger.info("Clicked section: %s", matched_option)
+
+                    # Parse remaining for banchi-go (e.g., "30-12" -> banchi=30, go=12)
+                    remaining_match = re.match(r"(\d+)(?:-(\d+))?$", remaining_address.lstrip("-"))
+                    if remaining_match and not banchi_value:
+                        banchi_value = remaining_match.group(1)
+                        go_value = remaining_match.group(2) or ""
+                        address_for_field = ""
+                        logger.info(
+                            "Parsed remaining: banchi=%s, go=%s",
+                            banchi_value, go_value,
+                        )
+                    elif remaining_address.strip():
+                        address_for_field = remaining_address.lstrip("-").strip()
+                    else:
+                        address_for_field = ""
+                else:
+                    logger.warning("Option '%s' found in text but not clickable", matched_option)
+
+            if not popup_clicked:
+                logger.warning(
+                    "Could not match address1 '%s' to any popup option %s",
+                    addr.address1, all_popup_options,
+                )
+
+    # Step 3: If popup is still open and unclicked, dismiss with first option as fallback
+    if has_popup and not popup_clicked:
+        logger.info("Popup still open; clicking first option as fallback to dismiss")
+        try:
+            first_link = popup_frame.locator("a").first
+            if await first_link.count() > 0:
+                first_text = await first_link.inner_text()
+                await first_link.click()
+                await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
+                popup_clicked = True
+                logger.info("Fallback: clicked '%s'", first_text)
+                # Keep raw address1 in address_for_field since we didn't match properly
+        except Exception:
+            logger.warning("Failed to click fallback popup option")
+
+    if not has_popup and addr.address1:
+        logger.info("No address popup after postal lookup; using raw address1: %s", addr.address1)
+
+    # Step 4: Fill address fields
     if banchi_value:
         await _fill_input(page, YAMATO_SELECTORS["recipient_address3"], banchi_value)
     elif address_for_field:
@@ -567,6 +665,34 @@ async def _uncheck_address_book(page: "Page") -> None:
         await page.wait_for_timeout(TIMEOUT_INPUT_MS)
 
 
+def _normalize_for_match(text: str) -> str:
+    """Normalize text for fuzzy matching: NFKC, collapse whitespace, strip 様."""
+    text = unicodedata.normalize("NFKC", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _sender_matches(candidate_text: str, sender_name: str) -> bool:
+    """Check if candidate text contains the sender name after normalization.
+
+    Handles full-width/half-width differences, extra spaces, and trailing 様.
+    """
+    norm_candidate = _normalize_for_match(candidate_text)
+    norm_sender = _normalize_for_match(sender_name)
+
+    # Direct normalized match
+    if norm_sender in norm_candidate:
+        return True
+
+    # Try without trailing 様 on both sides
+    norm_sender_no_sama = norm_sender.rstrip("様").strip()
+    norm_candidate_no_sama = norm_candidate.replace("様", " ").strip()
+    if norm_sender_no_sama and norm_sender_no_sama in norm_candidate_no_sama:
+        return True
+
+    return False
+
+
 async def _select_sender_from_address_book(
     page: "Page", settings: Settings
 ) -> None:
@@ -586,24 +712,41 @@ async def _select_sender_from_address_book(
             let p = r.parentElement;
             for (let j = 0; j < 5 && p; j++) {
                 if (p.innerText && p.innerText.length > 10)
-                    return {index: i, text: p.innerText.substring(0, 200)};
+                    return {index: i, text: p.innerText.substring(0, 300)};
                 p = p.parentElement;
             }
             return {index: i, text: ''};
         });
     }""")
 
+    logger.info(
+        "Sender address book: %d radio entries found. Looking for '%s'",
+        len(radio_entries), sender_name,
+    )
+    for i, entry in enumerate(radio_entries):
+        entry_text = entry.get("text", "")
+        # Log first 80 chars of each entry for debugging
+        logger.info("  entry[%d]: %s", i, entry_text[:80].replace("\n", " | "))
+
     for entry in radio_entries:
-        if sender_name in entry.get("text", ""):
+        entry_text = entry.get("text", "")
+        if _sender_matches(entry_text, sender_name):
             idx = entry["index"]
-            parent_div = page.locator("input[type='radio']").nth(idx).locator("xpath=ancestor::div").first
-            await parent_div.click()
+            radio = page.locator("input[type='radio']").nth(idx)
+            # Click the radio's container — try label first, then parent div
+            parent_label = radio.locator("xpath=ancestor::label")
+            if await parent_label.count() > 0:
+                await parent_label.first.click()
+            else:
+                parent_div = radio.locator("xpath=ancestor::div").first
+                await parent_div.click()
             await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
-            logger.info("Selected sender: %s", sender_name)
+            logger.info("Selected sender (matched): %s", sender_name)
             return
 
     raise RuntimeError(
-        f"Sender '{sender_name}' not found in address book"
+        f"Sender '{sender_name}' not found in address book. "
+        f"Saw {len(radio_entries)} entries (check logs for details)."
     )
 
 

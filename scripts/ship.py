@@ -1,9 +1,18 @@
 import asyncio
+import json
 import logging
 import sys
 from datetime import datetime
+from pathlib import Path
 
 from scripts.config import get_settings
+from scripts.models import (
+    DeliveryTimeSlot,
+    OrderItem,
+    PackageSize,
+    RentalOrder,
+    ShippingAddress,
+)
 from scripts.notify import notify_batch_summary, notify_shipment_result
 from scripts.supabase_client import fetch_pending_rentals, update_rental_shipping_status
 from scripts.yamato_automation import process_shipment
@@ -126,6 +135,51 @@ async def check_orders() -> int:
     return 0
 
 
+async def run_manual_test(payload_path: str | None = None) -> int:
+    """Run Yamato automation with a manual JSON payload. No DB updates."""
+    settings = get_settings()
+    if not settings.kuroneko_configured:
+        logger.error("Kuroneko credentials not configured")
+        return 1
+
+    if payload_path:
+        data = json.loads(Path(payload_path).read_text(encoding="utf-8"))
+    else:
+        logger.info("No payload file given; using built-in test payload")
+        data = {}
+
+    order = RentalOrder(
+        order_id=data.get("order_id", "manual-test"),
+        order_number=data.get("order_number", "#TEST"),
+        shipping_address=ShippingAddress(
+            last_name=data.get("last_name", "テスト"),
+            first_name=data.get("first_name", "太郎"),
+            postal_code=data.get("postal_code", "1500001"),
+            province=data.get("prefecture", ""),
+            city=data.get("city", ""),
+            address1=data.get("address1", ""),
+            address2=data.get("address2", ""),
+            phone=data.get("phone", "09012345678"),
+            building=data.get("building", ""),
+        ),
+        items=[OrderItem(title=data.get("product_name", "レンタル機器"), quantity=1)],
+        package_size=PackageSize(data.get("package_size", settings.default_package_size)),
+        delivery_date=data.get("delivery_date", ""),
+        delivery_time=DeliveryTimeSlot(data.get("delivery_time", "0")),
+        customer_email=data.get("customer_email", ""),
+    )
+
+    logger.info("Manual test: order=%s, recipient=%s %s, postal=%s, addr1=%s",
+                order.order_number, order.shipping_address.last_name,
+                order.shipping_address.first_name, order.shipping_address.postal_code,
+                order.shipping_address.address1)
+
+    result = await process_shipment(order)
+    logger.info("Result: status=%s, error=%s, qr=%s",
+                result.status.value, result.error_message or "(none)", result.qr_code_path or "(none)")
+    return 0 if result.status.value == "completed" else 1
+
+
 def main() -> None:
     command = sys.argv[1] if len(sys.argv) > 1 else "ship"
 
@@ -133,6 +187,9 @@ def main() -> None:
         code = asyncio.run(run_shipment_batch())
     elif command == "check":
         code = asyncio.run(check_orders())
+    elif command == "test":
+        payload_path = sys.argv[2] if len(sys.argv) > 2 else None
+        code = asyncio.run(run_manual_test(payload_path))
     elif command == "health":
         settings = get_settings()
         logger.info("Configuration:")
@@ -141,9 +198,10 @@ def main() -> None:
         logger.info("  LINE Notify: %s", "configured" if settings.line_notify_configured else "NOT SET")
         code = 0
     else:
-        print("Usage: python -m scripts.ship [ship|check|health]")
+        print("Usage: python -m scripts.ship [ship|check|health|test [payload.json]]")
         print("  ship   - Supabase上の発送対象(rentals)を処理 (デフォルト)")
         print("  check  - Supabase上のpending rentalsを一覧表示(処理なし)")
+        print("  test   - Manual test with JSON payload (no DB updates)")
         print("  health - Check configuration status")
         code = 2
 
