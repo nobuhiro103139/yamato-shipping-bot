@@ -316,24 +316,111 @@ async def _navigate_to_package_settings(page: "Page", order: RentalOrder) -> Non
     await _check_session_error(page)
 
 
+async def _dismiss_modal(page: "Page") -> None:
+    """モーダルオーバーレイ (modal3 等) が表示されていれば閉じる."""
+    for selector in [
+        "#modal3 a",           # modal3 内のリンク (OK / 閉じる)
+        "#modal3 button",      # modal3 内のボタン
+        ".modal-overlay + div a",
+        'a:has-text("OK")',
+        'button:has-text("OK")',
+        'a:has-text("閉じる")',
+        'button:has-text("閉じる")',
+    ]:
+        try:
+            loc = page.locator(selector)
+            if await loc.count() > 0 and await loc.first.is_visible():
+                await loc.first.click()
+                await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
+                logger.info("Dismissed modal via: %s", selector)
+                return
+        except Exception:
+            continue
+
+    # JS フォールバック: モーダルオーバーレイを非表示にする
+    modal_visible = await page.evaluate("""() => {
+        const overlay = document.querySelector('.modal-overlay');
+        return overlay && overlay.offsetParent !== null;
+    }""")
+    if modal_visible:
+        await page.evaluate("""() => {
+            document.querySelectorAll('.modal-overlay').forEach(el => {
+                el.style.display = 'none';
+            });
+            document.querySelectorAll('[id^="modal"]').forEach(el => {
+                el.style.display = 'none';
+            });
+        }""")
+        await page.wait_for_timeout(TIMEOUT_INPUT_MS)
+        logger.info("Dismissed modal via JS (forced hide)")
+
+
 async def _fill_package_settings(page: "Page", order: RentalOrder) -> None:
     radio_value = PACKAGE_SIZE_TO_RADIO_VALUE.get(order.package_size, "C")
-    await page.evaluate(
-        """(targetValue) => {
-            const radios = document.querySelectorAll('input[name="viwb2050ActionBean.size"]');
-            for (const r of radios) {
-                if (r.value === targetValue) {
-                    r.checked = true;
-                    r.dispatchEvent(new Event('change', {bubbles: true}));
-                    const lbl = r.closest('label');
-                    if (lbl) lbl.click();
-                    return;
+    logger.info("Selecting package size: %s (radio value=%s)", order.package_size, radio_value)
+
+    # --- 宅急便コンパクト選択: ラベルテキストを直接クリック ---
+    # JS evaluate だけでは UI フレームワークのイベントが発火しないため、
+    # Playwright ネイティブの click でラベルを操作する
+    size_selected = False
+
+    if radio_value == "C":
+        # 方法1: 「宅急便コンパクト」ラベルテキストを直接クリック
+        compact_label = page.get_by_text("宅急便コンパクト", exact=False)
+        if await compact_label.count() > 0:
+            await compact_label.first.click()
+            await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
+            logger.info("Clicked label text '宅急便コンパクト'")
+            size_selected = True
+
+            # 宅急便コンパクト選択後にモーダル (modal3 等) が出ることがある
+            # → OK / 閉じるボタンをクリックしてモーダルを閉じる
+            await _dismiss_modal(page)
+
+    if not size_selected:
+        # 方法2: radio input の親 label を Playwright でクリック
+        radio = page.locator(
+            f'input[name="viwb2050ActionBean.size"][value="{radio_value}"]'
+        )
+        if await radio.count() > 0:
+            parent_label = radio.locator("xpath=ancestor::label")
+            if await parent_label.count() > 0:
+                await parent_label.first.click()
+                logger.info("Clicked parent label for radio value=%s", radio_value)
+                size_selected = True
+            else:
+                await radio.first.click(force=True)
+                logger.info("Force-clicked radio value=%s", radio_value)
+                size_selected = True
+        await page.wait_for_timeout(TIMEOUT_INPUT_MS)
+
+    if not size_selected:
+        # 方法3: JS evaluate フォールバック (最終手段)
+        await page.evaluate(
+            """(targetValue) => {
+                const radios = document.querySelectorAll('input[name="viwb2050ActionBean.size"]');
+                for (const r of radios) {
+                    if (r.value === targetValue) {
+                        r.checked = true;
+                        r.dispatchEvent(new Event('change', {bubbles: true}));
+                        r.dispatchEvent(new Event('click', {bubbles: true}));
+                        const lbl = r.closest('label');
+                        if (lbl) lbl.click();
+                        return;
+                    }
                 }
-            }
-        }""",
-        radio_value,
-    )
-    await page.wait_for_timeout(TIMEOUT_INPUT_MS)
+            }""",
+            radio_value,
+        )
+        await page.wait_for_timeout(TIMEOUT_INPUT_MS)
+        logger.info("JS evaluate fallback for radio value=%s", radio_value)
+
+    # 選択結果を検証ログ
+    checked_value = await page.evaluate("""() => {
+        const checked = document.querySelector('input[name="viwb2050ActionBean.size"]:checked');
+        return checked ? checked.value : null;
+    }""")
+    logger.info("Size radio checked value after selection: %s (expected %s)", checked_value, radio_value)
 
     # 品名は固定で「スマートフォン」
     item_name_input = page.locator(YAMATO_SELECTORS["item_name"])
@@ -341,22 +428,48 @@ async def _fill_package_settings(page: "Page", order: RentalOrder) -> None:
         await item_name_input.first.fill("スマートフォン")
         await page.wait_for_timeout(TIMEOUT_INPUT_MS)
 
-    # 精密機械チェック - ラベルを直接クリック
-    handling_label = page.get_by_text("精密機械", exact=False)
-    if await handling_label.count() > 0:
+    # 精密機械チェック - ラベルを直接クリック (compact UI にない場合はスキップ)
+    try:
         handling_cb = page.locator('input[name="handling"][value="01"]')
         if await handling_cb.count() > 0 and not await handling_cb.first.is_checked():
-            await handling_label.first.click()
-            logger.info("Clicked 精密機械 label")
+            # label クリックが modal に遮られる場合は force=True で直接チェック
+            handling_label = page.get_by_text("精密機械", exact=False)
+            if await handling_label.count() > 0:
+                try:
+                    await handling_label.first.click(timeout=3000)
+                    logger.info("Clicked 精密機械 label")
+                except Exception:
+                    await handling_cb.first.click(force=True)
+                    logger.info("Force-clicked 精密機械 checkbox")
+    except Exception:
+        logger.info("精密機械 checkbox not found (may not exist for compact)")
     await page.wait_for_timeout(TIMEOUT_INPUT_MS)
 
     # 宅急便で送れないものに該当しません チェック
-    prohibited_label = page.get_by_text("宅急便で送れないものに該当しません", exact=False)
-    if await prohibited_label.count() > 0:
+    # 宅急便コンパクトの場合は「宅急便コンパクトで送れないもの」表記の可能性あり
+    try:
         prohibited_cb = page.locator('input[name="viwb2050ActionBean.notProhibited"]')
         if await prohibited_cb.count() > 0 and not await prohibited_cb.first.is_checked():
-            await prohibited_label.first.click()
-            logger.info("Clicked 宅急便で送れないもの label")
+            clicked = False
+            for prohibited_text in [
+                "送れないものに該当しません",
+                "宅急便で送れないものに該当しません",
+                "宅急便コンパクトで送れないものに該当しません",
+            ]:
+                prohibited_label = page.get_by_text(prohibited_text, exact=False)
+                if await prohibited_label.count() > 0:
+                    try:
+                        await prohibited_label.first.click(timeout=3000)
+                        logger.info("Clicked prohibited checkbox via text: %s", prohibited_text)
+                        clicked = True
+                    except Exception:
+                        continue
+                    break
+            if not clicked:
+                await prohibited_cb.first.click(force=True)
+                logger.info("Force-clicked prohibited checkbox")
+    except Exception:
+        logger.info("Prohibited checkbox not found (may not exist for compact)")
     await page.wait_for_timeout(TIMEOUT_INPUT_MS)
 
     next_clicked = False
@@ -765,20 +878,69 @@ async def _confirm_sender_info(page: "Page") -> None:
 
 async def _select_shipping_location(page: "Page", settings: Settings) -> None:
     preferred = settings.preferred_shipping_location
-    candidates = []
-    if preferred:
-        candidates.append(preferred)
-    candidates.append("近くから発送")
+    logger.info("Selecting shipping location (preferred=%s)", preferred or "(none)")
 
-    for loc_text in candidates:
-        loc = page.get_by_text(loc_text, exact=False)
+    # ページ上のラジオボタン / リンクから発送場所を選択
+    selected = False
+
+    # 方法1: preferred_shipping_location のテキストマッチ (部分一致)
+    if preferred:
+        loc = page.get_by_text(preferred, exact=False)
         if await loc.count() > 0:
             await loc.first.click()
             await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
-            logger.info("Selected shipping location: %s", loc_text)
-            break
-    else:
-        logger.warning("No shipping location found")
+            logger.info("Selected shipping location by preferred text: %s", preferred)
+            selected = True
+
+    # 方法2: 「セブンイレブン」を含むラジオボタンや要素を探す
+    if not selected and preferred and "セブン" in preferred:
+        seven_loc = page.get_by_text("セブン", exact=False)
+        if await seven_loc.count() > 0:
+            await seven_loc.first.click()
+            await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
+            logger.info("Selected shipping location by partial match: セブン")
+            selected = True
+
+    # 方法3: 登録済みの場所一覧からラジオボタンで選択
+    if not selected and preferred:
+        radio_entries = await page.evaluate("""() => {
+            const radios = document.querySelectorAll('input[type="radio"]');
+            return Array.from(radios).map((r, i) => {
+                let p = r.parentElement;
+                for (let j = 0; j < 5 && p; j++) {
+                    if (p.innerText && p.innerText.length > 3)
+                        return {index: i, text: p.innerText.substring(0, 200)};
+                    p = p.parentElement;
+                }
+                return {index: i, text: ''};
+            });
+        }""")
+        for entry in radio_entries:
+            entry_text = entry.get("text", "")
+            if preferred in entry_text or ("セブン" in preferred and "セブン" in entry_text):
+                idx = entry["index"]
+                radio = page.locator("input[type='radio']").nth(idx)
+                parent_label = radio.locator("xpath=ancestor::label")
+                if await parent_label.count() > 0:
+                    await parent_label.first.click()
+                else:
+                    await radio.first.click(force=True)
+                await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
+                logger.info("Selected shipping location via radio: %s", entry_text[:60])
+                selected = True
+                break
+
+    # フォールバック: 「近くから発送」
+    if not selected:
+        fallback = page.get_by_text("近くから発送", exact=False)
+        if await fallback.count() > 0:
+            await fallback.first.click()
+            await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
+            logger.info("Selected fallback shipping location: 近くから発送")
+            selected = True
+
+    if not selected:
+        logger.warning("No shipping location found on page")
 
     # 「次へ」ボタンで進む
     next_btn = page.get_by_text("次へ", exact=True)
@@ -789,7 +951,13 @@ async def _select_shipping_location(page: "Page", settings: Settings) -> None:
 
 
 async def _fill_delivery_datetime(page: "Page", order: RentalOrder) -> None:
+    logger.info(
+        "Delivery datetime: date=%s, time=%s",
+        order.delivery_date,
+        order.delivery_time.value if hasattr(order.delivery_time, "value") else order.delivery_time,
+    )
     if not order.delivery_date:
+        logger.warning("No delivery_date set on order; skipping delivery datetime")
         return
 
     try:
@@ -798,98 +966,160 @@ async def _fill_delivery_datetime(page: "Page", order: RentalOrder) -> None:
         logger.warning("Invalid delivery_date: %s", order.delivery_date)
         return
 
-    # 確認ページの場合、id="warning" の変更ボタン (お届け予定日) をクリック
+    # --- お届け予定日セクションへのナビゲーション ---
+    # select が見つかるまで複数の方法で「変更」ボタンを探す
     shipping_select = page.locator(YAMATO_SELECTORS["shipping_date"])
     if await shipping_select.count() == 0:
-        # お届け予定日の変更ボタン (Viwb4080Action_doDeliveryPreferredDate)
-        delivery_change = page.locator("button#warning")
-        if await delivery_change.count() > 0:
-            await delivery_change.first.click()
-            await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
-            logger.info("Clicked 変更 for お届け予定日")
-
-            # モーダルが出た場合 OK をクリック
-            ok_btn = page.get_by_text("OK", exact=True)
-            if await ok_btn.count() > 0 and await ok_btn.last.is_visible():
-                await ok_btn.last.click()
+        # 方法1: 「お届け予定日」付近の「変更」テキストリンク/ボタン
+        for change_selector in [
+            "button#warning",
+            'a:has-text("変更")',
+            'button:has-text("変更")',
+        ]:
+            change_btn = page.locator(change_selector)
+            if await change_btn.count() > 0:
+                await change_btn.first.click()
                 await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
-                logger.debug("Confirmed delivery date change modal, URL=%s", _safe_url(page.url))
+                logger.info("Clicked delivery date change via: %s", change_selector)
+                break
+
+        # モーダルが出た場合 OK をクリック
+        ok_btn = page.get_by_text("OK", exact=True)
+        if await ok_btn.count() > 0 and await ok_btn.last.is_visible():
+            await ok_btn.last.click()
+            await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
 
         shipping_select = page.locator(YAMATO_SELECTORS["shipping_date"])
 
+    # select がまだ見つからない場合、全 select 要素をダンプしてデバッグ
     if await shipping_select.count() == 0:
-        logger.warning("Delivery date selects not found")
+        all_selects = await page.evaluate("""() => {
+            return Array.from(document.querySelectorAll('select')).map(s => ({
+                name: s.name, id: s.id,
+                options: Array.from(s.options).slice(0, 5).map(o => o.value + ':' + o.text)
+            }));
+        }""")
+        logger.warning("Delivery date selects not found. All selects on page: %s", all_selects)
+        logger.warning("Page URL: %s", _safe_url(page.url))
         return
 
+    # --- 発送日・到着日・時間帯の各 select を取得 ---
     delivery_select = page.locator(YAMATO_SELECTORS["delivery_date"])
-    # 時間帯 select は複数あるので、先頭の有効なものを使う
     time_select_all = page.locator("select#timeToReceiveByTZone")
     if await time_select_all.count() > 0:
         time_select = time_select_all.first
     else:
         time_select = page.locator(YAMATO_SELECTORS["delivery_time"]).first
 
+    # 発送日 select の全オプションをログ出力
+    shipping_options = await shipping_select.first.evaluate("""el => {
+        return Array.from(el.options).map(o => o.value);
+    }""")
+    logger.info("Available shipping dates: %s", shipping_options)
+
+    # 発送日候補: 到着希望日の前日優先 → 2日前 → 当日
     ship_dates = [
         (delivery_dt - timedelta(days=1)).strftime("%Y%m%d"),
         (delivery_dt - timedelta(days=2)).strftime("%Y%m%d"),
         delivery_dt.strftime("%Y%m%d"),
     ]
+    logger.info("Will try shipping dates: %s for delivery %s", ship_dates, order.delivery_date)
 
+    date_set = False
     for ship_date in ship_dates:
-        if await shipping_select.count() == 0:
-            break
         option = shipping_select.first.locator(f'option[value="{ship_date}"]')
-        if await option.count() > 0:
-            await shipping_select.first.select_option(value=ship_date)
-            await page.wait_for_timeout(TIMEOUT_DROPDOWN_UPDATE_MS)
+        if await option.count() == 0:
+            logger.debug("Ship date %s not available", ship_date)
+            continue
 
-            if await delivery_select.count() > 0:
-                delivery_option = delivery_select.first.locator(
-                    f'option[value="{order.delivery_date}"]'
-                )
-                if await delivery_option.count() > 0:
-                    await delivery_select.first.select_option(value=order.delivery_date)
-                    await page.wait_for_timeout(TIMEOUT_DROPDOWN_UPDATE_MS)
+        await shipping_select.first.select_option(value=ship_date)
+        await page.wait_for_timeout(TIMEOUT_DROPDOWN_UPDATE_MS)
+        logger.info("Selected shipping date: %s", ship_date)
 
-                    time_value = order.delivery_time.value if hasattr(order.delivery_time, 'value') else str(order.delivery_time)
-                    if time_value and time_value != "0" and await time_select.count() > 0:
-                        # 時間帯 select の有効なオプションを確認
-                        enabled_options = await time_select.evaluate("""el => {
-                            return Array.from(el.options).map(o => ({
-                                value: o.value, text: o.text, disabled: o.disabled
-                            }));
-                        }""")
-                        logger.debug("Time options: %s", enabled_options)
+        # 到着日 select の再取得 (発送日変更でオプションが動的更新される)
+        delivery_select = page.locator(YAMATO_SELECTORS["delivery_date"])
+        if await delivery_select.count() == 0:
+            logger.warning("Delivery date select not found after setting ship date")
+            continue
 
-                        target_enabled = any(
-                            o["value"] == time_value and not o["disabled"]
-                            for o in enabled_options
-                        )
-                        chosen_time = time_value if target_enabled else next(
-                            (o["value"] for o in enabled_options
-                             if not o["disabled"] and o["value"] not in ("0", "")),
-                            None
-                        )
-                        if chosen_time:
-                            # Playwright の select_option が失敗する場合があるので JS で直接設定
-                            try:
-                                await time_select.select_option(value=chosen_time, timeout=5000)
-                            except Exception:
-                                await page.evaluate(f"""() => {{
-                                    const sel = document.querySelector('#timeToReceiveByTZone');
-                                    if (sel) {{
-                                        sel.value = '{chosen_time}';
-                                        sel.dispatchEvent(new Event('change', {{bubbles: true}}));
-                                    }}
-                                }}""")
-                            await page.wait_for_timeout(TIMEOUT_INPUT_MS)
-                            logger.info("Set delivery: ship=%s, deliver=%s, time=%s%s",
-                                        ship_date, order.delivery_date, chosen_time,
-                                        " (fallback)" if chosen_time != time_value else "")
-                        break
-                    else:
-                        logger.info("Set delivery: ship=%s, deliver=%s (no time)", ship_date, order.delivery_date)
-                        break
+        delivery_options = await delivery_select.first.evaluate("""el => {
+            return Array.from(el.options).map(o => o.value);
+        }""")
+        logger.info("Available delivery dates for ship=%s: %s", ship_date, delivery_options)
+
+        delivery_option = delivery_select.first.locator(
+            f'option[value="{order.delivery_date}"]'
+        )
+        if await delivery_option.count() == 0:
+            logger.debug("Delivery date %s not in options for ship=%s", order.delivery_date, ship_date)
+            continue
+
+        await delivery_select.first.select_option(value=order.delivery_date)
+        await page.wait_for_timeout(TIMEOUT_DROPDOWN_UPDATE_MS)
+        logger.info("Selected delivery date: %s", order.delivery_date)
+        date_set = True
+
+        # --- 時間帯の設定 ---
+        time_value = order.delivery_time.value if hasattr(order.delivery_time, "value") else str(order.delivery_time)
+        if not time_value or time_value == "0":
+            logger.info("No delivery time requested; skipping time selection")
+            break
+
+        # 時間帯 select の再取得 (到着日変更で時間帯オプションが変わる)
+        time_select_all = page.locator("select#timeToReceiveByTZone")
+        if await time_select_all.count() > 0:
+            time_select = time_select_all.first
+        else:
+            time_select = page.locator(YAMATO_SELECTORS["delivery_time"]).first
+
+        if await time_select.count() == 0:
+            logger.warning("Time select not found")
+            break
+
+        enabled_options = await time_select.evaluate("""el => {
+            return Array.from(el.options).map(o => ({
+                value: o.value, text: o.text, disabled: o.disabled
+            }));
+        }""")
+        logger.info("Time options: %s", enabled_options)
+
+        target_enabled = any(
+            o["value"] == time_value and not o["disabled"]
+            for o in enabled_options
+        )
+        chosen_time = time_value if target_enabled else next(
+            (o["value"] for o in enabled_options
+             if not o["disabled"] and o["value"] not in ("0", "")),
+            None
+        )
+        if chosen_time:
+            try:
+                await time_select.select_option(value=chosen_time, timeout=5000)
+            except Exception:
+                # JS フォールバック: select_option が効かない場合
+                await page.evaluate(f"""() => {{
+                    const sel = document.querySelector('#timeToReceiveByTZone')
+                        || document.querySelector('select[name="viwb4100ActionBean.timeToReceive"]');
+                    if (sel) {{
+                        sel.value = '{chosen_time}';
+                        sel.dispatchEvent(new Event('change', {{bubbles: true}}));
+                    }}
+                }}""")
+            await page.wait_for_timeout(TIMEOUT_INPUT_MS)
+            logger.info(
+                "Set delivery: ship=%s, deliver=%s, time=%s%s",
+                ship_date, order.delivery_date, chosen_time,
+                " (fallback)" if chosen_time != time_value else "",
+            )
+        else:
+            logger.warning("No enabled time option found")
+        break
+
+    if not date_set:
+        logger.warning(
+            "Could not set delivery date %s with any shipping date %s",
+            order.delivery_date, ship_dates,
+        )
 
     # 「設定する」または「次へ」で確定
     for btn_text in ["設定する", "次へ"]:

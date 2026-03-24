@@ -33,12 +33,18 @@ SHOPIFY_REQUEST_TIMEOUT = 30.0
 _token_cache: dict[str, object] = {"token": None, "expires_at": 0.0}
 
 # Mapping from Shopify customAttribute keys to delivery time slots
+# Supports both Japanese label format and HH:MM~HH:MM format
 _TIME_SLOT_MAP: dict[str, DeliveryTimeSlot] = {
     "午前中": DeliveryTimeSlot.MORNING,
     "14時〜16時": DeliveryTimeSlot.PM_14_16,
     "16時〜18時": DeliveryTimeSlot.PM_16_18,
     "18時〜20時": DeliveryTimeSlot.PM_18_20,
     "19時〜21時": DeliveryTimeSlot.PM_19_21,
+    "8:00~12:00": DeliveryTimeSlot.MORNING,
+    "14:00~16:00": DeliveryTimeSlot.PM_14_16,
+    "16:00~18:00": DeliveryTimeSlot.PM_16_18,
+    "18:00~20:00": DeliveryTimeSlot.PM_18_20,
+    "19:00~21:00": DeliveryTimeSlot.PM_19_21,
 }
 
 ORDERS_QUERY = """
@@ -48,6 +54,11 @@ query orderByNumber($query: String!) {
       node {
         id
         name
+        note
+        customAttributes {
+          key
+          value
+        }
         shippingAddress {
           lastName
           firstName
@@ -151,33 +162,82 @@ async def _get_access_token() -> str:
     return str(token)
 
 
-def _parse_custom_attributes(line_items_edges: list[dict]) -> dict[str, str]:
-    """Extract customAttributes from all line items into a flat dict.
+def _parse_custom_attributes(
+    line_items_edges: list[dict],
+    order_attrs: list[dict] | None = None,
+) -> dict[str, str]:
+    """Extract customAttributes from order-level and line items into a flat dict.
 
     Shopify stores rental metadata (開始日, 終了日, 配達指定時刻, etc.)
-    as customAttributes on line items.
+    as customAttributes on orders and/or line items.
+    Order-level attributes take precedence.
     """
     attrs: dict[str, str] = {}
+    # Line item level attributes
     for edge in line_items_edges:
         for attr in edge.get("node", {}).get("customAttributes", []) or []:
             key = attr.get("key", "")
             value = attr.get("value", "")
             if key and value:
                 attrs[key] = value
+    # Order-level attributes (override line item if same key)
+    for attr in order_attrs or []:
+        key = attr.get("key", "")
+        value = attr.get("value", "")
+        if key and value:
+            attrs[key] = value
     return attrs
 
 
 def _resolve_delivery_time(attrs: dict[str, str]) -> DeliveryTimeSlot:
-    """Map customAttribute time string to DeliveryTimeSlot enum."""
-    raw = attrs.get("配達指定時刻") or attrs.get("delivery_time") or ""
-    return _TIME_SLOT_MAP.get(raw, DeliveryTimeSlot.NONE)
+    """Map customAttribute time string to DeliveryTimeSlot enum.
+
+    Checks multiple possible keys: 配達指定時刻, 配達時間の設定(必須), delivery_time.
+    Supports comma-separated values (takes the first matching slot).
+    """
+    raw = (
+        attrs.get("配達指定時刻")
+        or attrs.get("配達時間の設定(必須)")
+        or attrs.get("delivery_time")
+        or ""
+    )
+    # Direct match
+    slot = _TIME_SLOT_MAP.get(raw.strip())
+    if slot:
+        return slot
+
+    # Comma-separated: try each part (first match wins)
+    if "," in raw:
+        for part in raw.split(","):
+            part = part.strip()
+            slot = _TIME_SLOT_MAP.get(part)
+            if slot:
+                logger.info("Resolved delivery time from multi-value '%s' -> %s", raw, part)
+                return slot
+
+    if raw:
+        logger.warning("Unrecognized delivery time value: '%s'", raw)
+    return DeliveryTimeSlot.NONE
 
 
 def _resolve_delivery_date(attrs: dict[str, str]) -> str:
-    """Extract delivery date from customAttributes, return YYYYMMDD or empty."""
-    raw = attrs.get("開始日") or attrs.get("delivery_date") or ""
-    # Accept YYYY-MM-DD or YYYYMMDD
-    clean = raw.replace("-", "").replace("/", "")
+    """Extract delivery date from customAttributes, return YYYYMMDD or empty.
+
+    Checks multiple possible keys: 開始日, Start, _start_iso8601, delivery_date.
+    Accepts YYYY-MM-DD, YYYYMMDD, or ISO8601 datetime formats.
+    """
+    raw = (
+        attrs.get("開始日")
+        or attrs.get("Start")
+        or attrs.get("_start_iso8601")
+        or attrs.get("delivery_date")
+        or ""
+    )
+    # Strip time portion if ISO8601 datetime (e.g., "2026-03-28T00:00:00+09:00")
+    if "T" in raw:
+        raw = raw.split("T")[0]
+    # Accept YYYY-MM-DD, YYYY.MM.DD, YYYY/MM/DD, or YYYYMMDD
+    clean = raw.replace("-", "").replace("/", "").replace(".", "")
     if len(clean) == 8 and clean.isdigit():
         return clean
     return ""
@@ -254,22 +314,35 @@ async def fetch_order_by_number(order_number: str) -> RentalOrder:
     if not line_items:
         line_items = [OrderItem(title="レンタル機器", quantity=1)]
 
-    # Parse delivery metadata from customAttributes
-    custom_attrs = _parse_custom_attributes(line_items_edges)
+    # Parse delivery metadata from customAttributes (order-level + line item level)
+    order_attrs = node.get("customAttributes") or []
+    custom_attrs = _parse_custom_attributes(line_items_edges, order_attrs)
+    logger.info("Parsed customAttributes keys: %s", list(custom_attrs.keys()))
+    if custom_attrs:
+        # ログに値も出す (個人情報でないキーのみ、トークン系は除外)
+        skip_keys = {"BTA Token", "_addons_uuid"}
+        for k, v in custom_attrs.items():
+            if k not in skip_keys:
+                logger.info("  attr[%s] = %s", k, v)
+
     delivery_date = _resolve_delivery_date(custom_attrs)
     delivery_time = _resolve_delivery_time(custom_attrs)
 
     if delivery_date:
         logger.info("Delivery date from customAttributes: %s", delivery_date)
+    else:
+        logger.warning("No delivery date found in customAttributes")
     if delivery_time != DeliveryTimeSlot.NONE:
         logger.info("Delivery time from customAttributes: %s", delivery_time.value)
+    else:
+        logger.warning("No delivery time found in customAttributes")
 
     display_name = node.get("name", f"#{clean_number}")
 
     try:
         package_size = PackageSize(settings.default_package_size)
     except ValueError:
-        package_size = PackageSize.M
+        package_size = PackageSize.COMPACT
 
     order = RentalOrder(
         order_id=f"shopify-{clean_number}",
