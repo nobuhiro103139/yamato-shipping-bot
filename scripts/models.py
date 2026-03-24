@@ -49,7 +49,7 @@ class RentalOrder(BaseModel):
     order_number: str
     shipping_address: ShippingAddress
     items: list[OrderItem]
-    package_size: PackageSize = PackageSize.M
+    package_size: PackageSize = PackageSize.COMPACT
     delivery_date: str = ""  # YYYYMMDD
     delivery_time: DeliveryTimeSlot = DeliveryTimeSlot.NONE
     customer_email: str = ""

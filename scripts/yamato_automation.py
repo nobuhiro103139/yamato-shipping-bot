@@ -317,7 +317,7 @@ async def _navigate_to_package_settings(page: "Page", order: RentalOrder) -> Non
 
 
 async def _fill_package_settings(page: "Page", order: RentalOrder) -> None:
-    radio_value = PACKAGE_SIZE_TO_RADIO_VALUE.get(order.package_size, "S")
+    radio_value = PACKAGE_SIZE_TO_RADIO_VALUE.get(order.package_size, "C")
     await page.evaluate(
         """(targetValue) => {
             const radios = document.querySelectorAll('input[name="viwb2050ActionBean.size"]');
@@ -335,10 +335,10 @@ async def _fill_package_settings(page: "Page", order: RentalOrder) -> None:
     )
     await page.wait_for_timeout(TIMEOUT_INPUT_MS)
 
-    product_names = ", ".join(item.title for item in order.items)
+    # 品名は固定で「スマートフォン」
     item_name_input = page.locator(YAMATO_SELECTORS["item_name"])
     if await item_name_input.count() > 0:
-        await item_name_input.first.fill(product_names[:PRODUCT_NAME_MAX_LENGTH])
+        await item_name_input.first.fill("スマートフォン")
         await page.wait_for_timeout(TIMEOUT_INPUT_MS)
 
     # 精密機械チェック - ラベルを直接クリック
@@ -410,9 +410,10 @@ async def _select_direct_address_input(page: "Page") -> None:
 async def _fill_recipient_info(page: "Page", order: RentalOrder) -> None:
     addr = order.shipping_address
 
-    await _fill_input(page, YAMATO_SELECTORS["recipient_last_name"], addr.last_name)
-    if addr.first_name:
-        await _fill_input(page, YAMATO_SELECTORS["recipient_first_name"], addr.first_name)
+    # Shopify JP stores firstName=姓, lastName=名 (逆) なので swap して入力
+    await _fill_input(page, YAMATO_SELECTORS["recipient_last_name"], addr.first_name)
+    if addr.last_name:
+        await _fill_input(page, YAMATO_SELECTORS["recipient_first_name"], addr.last_name)
 
     postal_code = addr.postal_code.replace("-", "")
     await _fill_input(page, YAMATO_SELECTORS["recipient_zip"], postal_code)
