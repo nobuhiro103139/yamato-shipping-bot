@@ -54,6 +54,7 @@ query orderByNumber($query: String!) {
       node {
         id
         name
+        email
         note
         customAttributes {
           key
@@ -344,6 +345,8 @@ async def fetch_order_by_number(order_number: str) -> RentalOrder:
     except ValueError:
         package_size = PackageSize.COMPACT
 
+    customer_email = node.get("email") or ""
+
     order = RentalOrder(
         order_id=f"shopify-{clean_number}",
         order_number=display_name,
@@ -352,6 +355,7 @@ async def fetch_order_by_number(order_number: str) -> RentalOrder:
         package_size=package_size,
         delivery_date=delivery_date,
         delivery_time=delivery_time,
+        customer_email=customer_email,
     )
 
     masked_name = f"{shipping_address.last_name[:1]}***" if shipping_address.last_name else "N/A"

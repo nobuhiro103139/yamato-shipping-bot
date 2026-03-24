@@ -523,10 +523,10 @@ async def _select_direct_address_input(page: "Page") -> None:
 async def _fill_recipient_info(page: "Page", order: RentalOrder) -> None:
     addr = order.shipping_address
 
-    # Shopify JP stores firstName=姓, lastName=名 (逆) なので swap して入力
-    await _fill_input(page, YAMATO_SELECTORS["recipient_last_name"], addr.first_name)
-    if addr.last_name:
-        await _fill_input(page, YAMATO_SELECTORS["recipient_first_name"], addr.last_name)
+    # Shopify shippingAddress: lastName=姓, firstName=名 — そのまま入力
+    await _fill_input(page, YAMATO_SELECTORS["recipient_last_name"], addr.last_name)
+    if addr.first_name:
+        await _fill_input(page, YAMATO_SELECTORS["recipient_first_name"], addr.first_name)
 
     postal_code = addr.postal_code.replace("-", "")
     await _fill_input(page, YAMATO_SELECTORS["recipient_zip"], postal_code)
@@ -735,6 +735,7 @@ async def _fill_recipient_info(page: "Page", order: RentalOrder) -> None:
 
 
 async def _toggle_notification(page: "Page", email: str) -> None:
+    """「お届け先へお届け予定をお知らせする」をチェックし、メールアドレスを入力する。"""
     notify_cb = page.locator('input[name*="notifyFlg"]')
     if await notify_cb.count() > 0:
         if not await notify_cb.first.is_checked():
@@ -743,14 +744,34 @@ async def _toggle_notification(page: "Page", email: str) -> None:
             if await notify_label.count() > 0:
                 await notify_label.first.click()
             else:
-                toggle_text = page.get_by_text("届け先への配達予定通知", exact=False)
-                if await toggle_text.count() > 0:
-                    await toggle_text.first.click()
+                # 複数のテキストパターンで探す
+                for text in [
+                    "お届け先へお届け予定をお知らせする",
+                    "届け先への配達予定通知",
+                    "届け予定をお知らせ",
+                ]:
+                    toggle_text = page.get_by_text(text, exact=False)
+                    if await toggle_text.count() > 0:
+                        await toggle_text.first.click()
+                        break
                 else:
                     await notify_cb.first.click(force=True)
             await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
             logger.info("Toggled delivery notification on")
+    else:
+        # notifyFlg が見つからない場合、テキストリンク/ラベルで探す
+        for text in [
+            "お届け先へお届け予定をお知らせする",
+            "届け先への配達予定通知",
+        ]:
+            toggle_text = page.get_by_text(text, exact=False)
+            if await toggle_text.count() > 0:
+                await toggle_text.first.click()
+                await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
+                logger.info("Toggled delivery notification via text: %s", text)
+                break
 
+    # メールアドレス入力
     email_input = page.locator('input[name*="mailAddress"]')
     if await email_input.count() == 0:
         email_input = page.locator('input[type="email"]')
@@ -758,8 +779,11 @@ async def _toggle_notification(page: "Page", email: str) -> None:
         if await email_input.first.is_visible():
             await email_input.first.fill(email)
             await page.wait_for_timeout(TIMEOUT_INPUT_MS)
+            logger.info("Filled notification email")
         else:
             logger.warning("Email input not visible, skipping notification email")
+    else:
+        logger.warning("No email input found on page")
 
 
 async def _uncheck_address_book(page: "Page") -> None:

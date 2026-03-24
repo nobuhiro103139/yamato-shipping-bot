@@ -39,6 +39,7 @@ MOCK_GRAPHQL_RESPONSE = {
                     "node": {
                         "id": "gid://shopify/Order/123",
                         "name": "#2011",
+                        "email": "tanaka@example.com",
                         "shippingAddress": {
                             "lastName": "田中",
                             "firstName": "太郎",
@@ -109,6 +110,7 @@ async def test_fetch_order_by_number_success(monkeypatch, httpx_mock):
     # customAttributes should be parsed
     assert order.delivery_date == "20260401"
     assert order.delivery_time == DeliveryTimeSlot.MORNING
+    assert order.customer_email == "tanaka@example.com"
 
 
 @pytest.mark.asyncio
