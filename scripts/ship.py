@@ -14,6 +14,7 @@ from scripts.models import (
     ShippingAddress,
 )
 from scripts.notify import notify_batch_summary, notify_shipment_result
+from scripts.shopify_client import fetch_order_by_number
 from scripts.supabase_client import fetch_pending_rentals, update_rental_shipping_status
 from scripts.yamato_automation import process_shipment
 
@@ -135,6 +136,71 @@ async def check_orders() -> int:
     return 0
 
 
+async def run_single_order(order_number: str) -> int:
+    """Fetch a single order from Shopify by number and process it through Yamato automation.
+
+    No Supabase interaction — this mode uses Shopify as the source of truth.
+    """
+    settings = get_settings()
+    if not settings.kuroneko_configured:
+        logger.error("Kuroneko credentials not configured")
+        return 1
+    if not settings.shopify_configured:
+        logger.error(
+            "Shopify credentials not configured. "
+            "Set SHOPIFY_STORE, SHOPIFY_CLIENT_ID, SHOPIFY_CLIENT_SECRET in .env"
+        )
+        return 1
+
+    clean_number = order_number.lstrip("#")
+    logger.info("Fetching order #%s from Shopify...", clean_number)
+
+    try:
+        order = await fetch_order_by_number(clean_number)
+    except ValueError as exc:
+        logger.error("Order not found: %s", exc)
+        return 1
+    except Exception:
+        logger.exception("Failed to fetch order #%s from Shopify", clean_number)
+        return 1
+
+    addr = order.shipping_address
+    masked_name = f"{addr.last_name[:1]}***" if addr.last_name else "N/A"
+    logger.info(
+        "Processing order %s — %s (postal: %s)",
+        order.order_number,
+        masked_name,
+        addr.postal_code,
+    )
+
+    try:
+        result = await process_shipment(order)
+    except Exception:
+        logger.exception("Shipment processing crashed for order %s", order.order_number)
+        return 1
+
+    if result.status.value == "completed":
+        logger.info("Completed. QR: %s", result.qr_code_path)
+        if settings.line_notify_configured:
+            try:
+                await notify_shipment_result(
+                    order.order_number, success=True, qr_code_path=result.qr_code_path
+                )
+            except Exception:
+                logger.exception("Failed to send LINE notification")
+        return 0
+    else:
+        logger.error("Failed: %s", result.error_message)
+        if settings.line_notify_configured:
+            try:
+                await notify_shipment_result(
+                    order.order_number, success=False, error=result.error_message
+                )
+            except Exception:
+                logger.exception("Failed to send LINE notification")
+        return 1
+
+
 async def run_manual_test(payload_path: str | None = None) -> int:
     """Run Yamato automation with a manual JSON payload. No DB updates."""
     settings = get_settings()
@@ -180,10 +246,18 @@ async def run_manual_test(payload_path: str | None = None) -> int:
     return 0 if result.status.value == "completed" else 1
 
 
+def _looks_like_order_number(arg: str) -> bool:
+    """Return True if the argument looks like an order number (digits, optionally prefixed with #)."""
+    return arg.lstrip("#").isdigit()
+
+
 def main() -> None:
     command = sys.argv[1] if len(sys.argv) > 1 else "ship"
 
-    if command == "ship":
+    # `python ship.py 2011` or `python ship.py #2011` — order number mode
+    if _looks_like_order_number(command):
+        code = asyncio.run(run_single_order(command))
+    elif command == "ship":
         code = asyncio.run(run_shipment_batch())
     elif command == "check":
         code = asyncio.run(check_orders())
@@ -195,10 +269,12 @@ def main() -> None:
         logger.info("Configuration:")
         logger.info("  Supabase: %s", "configured" if settings.supabase_configured else "NOT SET")
         logger.info("  Kuroneko: %s", "configured" if settings.kuroneko_configured else "NOT SET")
+        logger.info("  Shopify: %s", "configured" if settings.shopify_configured else "NOT SET")
         logger.info("  LINE Notify: %s", "configured" if settings.line_notify_configured else "NOT SET")
         code = 0
     else:
-        print("Usage: python -m scripts.ship [ship|check|health|test [payload.json]]")
+        print("Usage: python -m scripts.ship [<order_number>|ship|check|health|test [payload.json]]")
+        print("  <order_number> - Shopifyから注文を取得しヤマト自動入力 (例: 2011)")
         print("  ship   - Supabase上の発送対象(rentals)を処理 (デフォルト)")
         print("  check  - Supabase上のpending rentalsを一覧表示(処理なし)")
         print("  test   - Manual test with JSON payload (no DB updates)")

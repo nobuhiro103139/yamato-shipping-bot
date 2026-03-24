@@ -14,3 +14,5 @@ poetry.lock
 *.png
 *.jpg
 .DS_Store
+.playwright/
+uv.lock

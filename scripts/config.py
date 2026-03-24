@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     preferred_shipping_location: str = ""
     line_notify_token: str = ""
     headless_browser: bool = True
+    shopify_store: str = ""
+    shopify_client_id: str = ""
+    shopify_client_secret: str = ""
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
@@ -42,6 +45,10 @@ class Settings(BaseSettings):
     @property
     def line_notify_configured(self) -> bool:
         return bool(self.line_notify_token)
+
+    @property
+    def shopify_configured(self) -> bool:
+        return bool(self.shopify_store and self.shopify_client_id and self.shopify_client_secret)
 
 
 @lru_cache
