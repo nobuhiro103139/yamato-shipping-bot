@@ -62,9 +62,47 @@ class ShippingStatus(str, Enum):
     FAILED = "failed"
 
 
+class VerificationField(BaseModel):
+    """Single field comparison result."""
+
+    field: str
+    expected: str
+    actual: str
+    match: bool
+
+
+class VerificationReport(BaseModel):
+    """Post-save verification report comparing expected vs actual values."""
+
+    order_number: str
+    timestamp: str
+    fields: list[VerificationField] = []
+    mismatches: list[VerificationField] = []
+    page_text_snippet: str = ""
+    verified: bool = False
+
+    def add(self, field: str, expected: str, actual: str) -> None:
+        expected_s = str(expected).strip()
+        actual_s = str(actual).strip()
+        entry = VerificationField(
+            field=field,
+            expected=expected_s,
+            actual=actual_s,
+            match=expected_s == actual_s,
+        )
+        self.fields.append(entry)
+        if not entry.match:
+            self.mismatches.append(entry)
+
+    @property
+    def all_match(self) -> bool:
+        return len(self.mismatches) == 0 and len(self.fields) > 0
+
+
 class ShippingResult(BaseModel):
     order_id: str
     order_number: str
     status: ShippingStatus
     qr_code_path: str = ""
     error_message: str = ""
+    verification: VerificationReport | None = None

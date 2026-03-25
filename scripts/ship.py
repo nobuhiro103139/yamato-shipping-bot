@@ -74,6 +74,12 @@ async def run_shipment_batch() -> int:
 
         if result.status.value == "completed":
             logger.info("  -> Completed. QR: %s", result.qr_code_path)
+            if result.verification and result.verification.mismatches:
+                logger.warning(
+                    "  -> %d verification mismatch(es) for %s",
+                    len(result.verification.mismatches),
+                    order.order_number,
+                )
             try:
                 await update_rental_shipping_status(order.order_id, "shipped")
             except Exception:
@@ -181,6 +187,20 @@ async def run_single_order(order_number: str) -> int:
 
     if result.status.value == "completed":
         logger.info("Completed. QR: %s", result.qr_code_path)
+        if result.verification:
+            v = result.verification
+            if v.mismatches:
+                logger.warning(
+                    "Verification: %d mismatch(es) detected", len(v.mismatches)
+                )
+                for m in v.mismatches:
+                    logger.warning(
+                        "  %s: expected=%r, actual=%r", m.field, m.expected, m.actual
+                    )
+            else:
+                logger.info(
+                    "Verification: all %d fields match", len(v.fields)
+                )
         if settings.line_notify_configured:
             try:
                 await notify_shipment_result(
@@ -243,6 +263,14 @@ async def run_manual_test(payload_path: str | None = None) -> int:
     result = await process_shipment(order)
     logger.info("Result: status=%s, error=%s, qr=%s",
                 result.status.value, result.error_message or "(none)", result.qr_code_path or "(none)")
+    if result.verification:
+        v = result.verification
+        if v.mismatches:
+            logger.warning("Verification: %d mismatch(es)", len(v.mismatches))
+            for m in v.mismatches:
+                logger.warning("  %s: expected=%r, actual=%r", m.field, m.expected, m.actual)
+        else:
+            logger.info("Verification: all %d fields match", len(v.fields))
     return 0 if result.status.value == "completed" else 1
 
 

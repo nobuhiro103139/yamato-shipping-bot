@@ -1,3 +1,4 @@
+import json
 import logging
 import re
 import unicodedata
@@ -7,7 +8,13 @@ from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
 from scripts.config import Settings, get_settings
-from scripts.models import PackageSize, RentalOrder, ShippingResult, ShippingStatus
+from scripts.models import (
+    PackageSize,
+    RentalOrder,
+    ShippingResult,
+    ShippingStatus,
+    VerificationReport,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +23,9 @@ if TYPE_CHECKING:
 
 QR_CODE_DIR = Path("qr_codes")
 QR_CODE_DIR.mkdir(exist_ok=True)
+
+VERIFICATION_DIR = Path("verification_logs")
+VERIFICATION_DIR.mkdir(exist_ok=True)
 
 YAMATO_SEND_URL = "https://sp-send.kuronekoyamato.co.jp/"
 
@@ -181,6 +191,18 @@ async def _run_yamato_automation(
             await _fill_delivery_datetime(page, order)
             logger.info("STEP: delivery_datetime done")
 
+            # === 保存後確認フェーズ: 保存前にページ上の値を取得 ===
+            verification = await _verify_confirmation(page, order, settings)
+            _log_verification_summary(verification)
+            verification_path = _save_verification_report(verification)
+            logger.info("STEP: verification done (%s)", verification_path)
+
+            # 保存前スクリーンショット（確認画面の状態を記録）
+            pre_save_screenshot = str(
+                QR_CODE_DIR / f"{order.order_number}_pre_save.png"
+            )
+            await page.screenshot(path=pre_save_screenshot, full_page=True)
+
             await _save_draft(page)
             logger.info("STEP: save_draft done")
 
@@ -192,6 +214,7 @@ async def _run_yamato_automation(
                 order_number=order.order_number,
                 status=ShippingStatus.COMPLETED,
                 qr_code_path=screenshot_path,
+                verification=verification,
             )
 
         except Exception:
@@ -1380,6 +1403,391 @@ async def _fill_delivery_datetime(page: "Page", order: RentalOrder) -> None:
             await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
             logger.info("Delivery datetime confirmed with '%s'", btn_text)
             break
+
+
+async def _scrape_confirmation_page(page: "Page") -> dict[str, str]:
+    """確認ページからフォーム入力値とページテキストを取得する。
+
+    Yamato の確認ページは2パターン:
+    1. フォーム入力値が残っている (hidden / readonly input)
+    2. テキスト表示のみ (入力値が DOM テキストに展開されている)
+
+    両方のパターンに対応し、取得できた値を返す。
+    """
+    scraped: dict[str, str] = {}
+
+    # --- パターン1: フォーム入力値の直接読み取り ---
+    form_values = await page.evaluate("""() => {
+        const result = {};
+        const fields = {
+            'recipient_last_name': 'viwb3040ActionBean.lastName',
+            'recipient_first_name': 'viwb3040ActionBean.firstName',
+            'recipient_zip': 'viwb3040ActionBean.zipCode',
+            'recipient_address3': 'viwb3040ActionBean.address3',
+            'recipient_address3opt': 'viwb3040ActionBean.address3opt',
+            'recipient_address4': 'viwb3040ActionBean.address4',
+            'recipient_phone': 'viwb3040ActionBean.phoneNumber',
+            'sender_last_name': 'viwb3130ActionBean.lastName',
+            'sender_first_name': 'viwb3130ActionBean.firstName',
+            'sender_zip': 'viwb3130ActionBean.zipCode',
+            'notification_email': 'yoteiMailAddr',
+        };
+        for (const [key, name] of Object.entries(fields)) {
+            const el = document.querySelector(`input[name="${name}"]`)
+                || document.querySelector(`input[name*="${name}"]`);
+            if (el) result[key] = el.value || '';
+        }
+        // サイズ (checked radio)
+        const sizeRadio = document.querySelector(
+            'input[name="viwb2050ActionBean.size"]:checked'
+        );
+        if (sizeRadio) result['package_size'] = sizeRadio.value || '';
+
+        // 配達日・時間 (select)
+        const deliveryDate = document.querySelector(
+            'select[name="viwb4100ActionBean.dateToReceive"]'
+        );
+        if (deliveryDate) result['delivery_date'] = deliveryDate.value || '';
+
+        const deliveryTime = document.querySelector('#timeToReceiveByTZone')
+            || document.querySelector('select[name="viwb4100ActionBean.timeToReceive"]');
+        if (deliveryTime) result['delivery_time'] = deliveryTime.value || '';
+
+        return result;
+    }""")
+
+    for k, v in form_values.items():
+        if v:
+            scraped[k] = v
+
+    # --- パターン2: ページテキストからの抽出 ---
+    # 確認画面ではフォーム要素がない場合があるため、表示テキストも取得
+    page_text = await page.evaluate("""() => {
+        const body = document.querySelector('body');
+        return body ? body.innerText : '';
+    }""")
+    scraped["_page_text"] = page_text[:3000]  # 先頭3000文字のスニペット
+
+    # テキストから住所を抽出 (フォーム値がない場合のフォールバック)
+    if "recipient_address3" not in scraped:
+        # 「〒」の後の郵便番号とその下の住所行を探す
+        zip_match = re.search(r"〒\s*(\d{3}-?\d{4})", page_text)
+        if zip_match:
+            scraped.setdefault("recipient_zip_display", zip_match.group(1).replace("-", ""))
+
+    # 確認画面のテキストからキーバリューペアを抽出
+    # 典型パターン: "お届け先\n山田 太郎\n〒150-0001\n東京都..."
+    text_values = await page.evaluate("""() => {
+        const result = {};
+        // dt/dd パターン (定義リスト形式)
+        document.querySelectorAll('dt, th').forEach(dt => {
+            const dd = dt.nextElementSibling;
+            if (dd) {
+                const key = dt.textContent.trim();
+                const val = dd.textContent.trim();
+                if (key && val) result[key] = val;
+            }
+        });
+        // ラベル + 値パターン (span/div 形式)
+        document.querySelectorAll('.label, .item-label, [class*="label"]').forEach(label => {
+            const sib = label.nextElementSibling;
+            if (sib) {
+                const key = label.textContent.trim();
+                const val = sib.textContent.trim();
+                if (key && val) result[key] = val;
+            }
+        });
+        return result;
+    }""")
+
+    for k, v in text_values.items():
+        scraped[f"_text_{k}"] = v
+
+    return scraped
+
+
+def _build_expected_values(
+    order: RentalOrder, settings: "Settings",
+) -> dict[str, str]:
+    """RentalOrder + Settings から期待値の辞書を生成する。"""
+    addr = order.shipping_address
+    expected: dict[str, str] = {}
+
+    # 宛先
+    expected["recipient_last_name"] = addr.last_name
+    expected["recipient_first_name"] = addr.first_name
+    expected["recipient_zip"] = addr.postal_code.replace("-", "")
+    if addr.building:
+        expected["recipient_address4"] = addr.building
+
+    # 丁目・番地 — 期待値は address1 のパース結果ベース
+    if addr.chome:
+        expected["recipient_chome"] = addr.chome
+    if addr.banchi:
+        expected["recipient_banchi"] = addr.banchi
+
+    # サイズ
+    radio_value = PACKAGE_SIZE_TO_RADIO_VALUE.get(order.package_size, "C")
+    expected["package_size"] = radio_value
+
+    # 配達日時
+    if order.delivery_date:
+        expected["delivery_date"] = order.delivery_date
+    time_val = (
+        order.delivery_time.value
+        if hasattr(order.delivery_time, "value")
+        else str(order.delivery_time)
+    )
+    if time_val and time_val != "0":
+        expected["delivery_time"] = time_val
+
+    # 発送元 (sender_name)
+    if settings.sender_name:
+        expected["sender_name"] = settings.sender_name.replace("様", "").strip()
+
+    # 通知メール
+    if order.customer_email:
+        expected["notification_email"] = order.customer_email
+
+    return expected
+
+
+def _fuzzy_match(expected: str, actual: str) -> bool:
+    """正規化して比較。全角/半角、空白、「様」の差異を吸収する。"""
+    if not expected and not actual:
+        return True
+    if not expected or not actual:
+        return False
+    e = unicodedata.normalize("NFKC", expected).strip()
+    a = unicodedata.normalize("NFKC", actual).strip()
+    # 完全一致
+    if e == a:
+        return True
+    # 一方が他方を含む (住所の部分一致)
+    if e in a or a in e:
+        return True
+    # 数字のみ比較 (丁目番地)
+    e_digits = re.sub(r"\D", "", e)
+    a_digits = re.sub(r"\D", "", a)
+    if e_digits and a_digits and e_digits == a_digits:
+        return True
+    return False
+
+
+async def _verify_confirmation(
+    page: "Page",
+    order: RentalOrder,
+    settings: "Settings",
+) -> VerificationReport:
+    """確認ページの値を期待値と比較し、VerificationReport を生成・保存する。"""
+    report = VerificationReport(
+        order_number=order.order_number,
+        timestamp=datetime.now().isoformat(),
+    )
+
+    try:
+        scraped = await _scrape_confirmation_page(page)
+        expected = _build_expected_values(order, settings)
+
+        report.page_text_snippet = scraped.get("_page_text", "")[:1000]
+        page_text = scraped.get("_page_text", "")
+
+        # --- フィールドごとの比較 ---
+
+        # 1. 宛先名 (姓)
+        actual_last = scraped.get("recipient_last_name", "")
+        if not actual_last and page_text:
+            # ページテキストに名前が含まれるかチェック
+            actual_last = (
+                expected.get("recipient_last_name", "")
+                if expected.get("recipient_last_name", "") in page_text
+                else ""
+            )
+        report.add(
+            "recipient_last_name",
+            expected.get("recipient_last_name", ""),
+            actual_last,
+        )
+
+        # 2. 宛先名 (名)
+        actual_first = scraped.get("recipient_first_name", "")
+        if not actual_first and page_text:
+            actual_first = (
+                expected.get("recipient_first_name", "")
+                if expected.get("recipient_first_name", "") in page_text
+                else ""
+            )
+        report.add(
+            "recipient_first_name",
+            expected.get("recipient_first_name", ""),
+            actual_first,
+        )
+
+        # 3. 郵便番号
+        actual_zip = scraped.get(
+            "recipient_zip",
+            scraped.get("recipient_zip_display", ""),
+        )
+        if not actual_zip and page_text:
+            zip_match = re.search(r"(\d{3})-?(\d{4})", page_text)
+            if zip_match:
+                actual_zip = zip_match.group(1) + zip_match.group(2)
+        report.add(
+            "recipient_zip",
+            expected.get("recipient_zip", ""),
+            actual_zip,
+        )
+
+        # 4. 住所3 (丁目)
+        actual_addr3 = scraped.get("recipient_address3", "")
+        report.add(
+            "recipient_address3_chome",
+            expected.get("recipient_chome", ""),
+            actual_addr3,
+        )
+
+        # 5. 住所3opt (番地・号)
+        actual_addr3opt = scraped.get("recipient_address3opt", "")
+        report.add(
+            "recipient_address3opt_banchi",
+            expected.get("recipient_banchi", ""),
+            actual_addr3opt,
+        )
+
+        # 6. 建物名
+        actual_addr4 = scraped.get("recipient_address4", "")
+        report.add(
+            "recipient_address4_building",
+            expected.get("recipient_address4", ""),
+            actual_addr4,
+        )
+
+        # 7. サイズ
+        actual_size = scraped.get("package_size", "")
+        if not actual_size and page_text:
+            for label, val in [
+                ("宅急便コンパクト", "C"),
+                ("宅急便 LL", "LL"),
+                ("宅急便 L", "L"),
+                ("宅急便 M", "M"),
+                ("宅急便 S", "S"),
+            ]:
+                if label in page_text:
+                    actual_size = val
+                    break
+        report.add(
+            "package_size",
+            expected.get("package_size", ""),
+            actual_size,
+        )
+
+        # 8. 配達日
+        actual_date = scraped.get("delivery_date", "")
+        if not actual_date and page_text and expected.get("delivery_date"):
+            # YYYYMMDD → 表示形式 "YYYY/MM/DD" or "MM月DD日" をテキストから探す
+            exp_date = expected["delivery_date"]
+            if len(exp_date) == 8:
+                formatted = f"{exp_date[:4]}/{exp_date[4:6]}/{exp_date[6:8]}"
+                jp_formatted = f"{int(exp_date[4:6])}月{int(exp_date[6:8])}日"
+                if exp_date in page_text:
+                    actual_date = exp_date
+                elif formatted in page_text:
+                    actual_date = exp_date  # 表示形式は違うが値は一致
+                elif jp_formatted in page_text:
+                    actual_date = exp_date
+        report.add(
+            "delivery_date",
+            expected.get("delivery_date", ""),
+            actual_date,
+        )
+
+        # 9. 配達時間
+        actual_time = scraped.get("delivery_time", "")
+        report.add(
+            "delivery_time",
+            expected.get("delivery_time", ""),
+            actual_time,
+        )
+
+        # 10. 発送元
+        actual_sender = scraped.get("sender_last_name", "")
+        sender_first = scraped.get("sender_first_name", "")
+        if sender_first:
+            actual_sender = f"{actual_sender} {sender_first}".strip()
+        if not actual_sender and page_text and expected.get("sender_name"):
+            actual_sender = (
+                expected["sender_name"]
+                if expected["sender_name"] in page_text
+                else ""
+            )
+        report.add(
+            "sender_name",
+            expected.get("sender_name", ""),
+            actual_sender,
+        )
+
+        # 11. 通知メール
+        actual_email = scraped.get("notification_email", "")
+        if expected.get("notification_email"):
+            report.add(
+                "notification_email",
+                expected["notification_email"],
+                actual_email,
+            )
+
+        # fuzzy match で mismatch リストを再評価
+        # strict match で不一致でも fuzzy で一致していれば mismatch から除外しない
+        # （厳密な差分を残すことで改善材料にする）
+        report.verified = True
+
+    except Exception as e:
+        logger.warning("Verification scrape failed: %s", e)
+        report.page_text_snippet = f"ERROR: {e}"
+
+    return report
+
+
+def _save_verification_report(report: VerificationReport) -> str:
+    """検証レポートを JSON ファイルに保存し、パスを返す。"""
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_order = re.sub(r"[^\w\-]", "", report.order_number)
+    filename = f"{safe_order}_{ts}.json"
+    filepath = VERIFICATION_DIR / filename
+
+    # page_text_snippet 内の個人情報をマスクしないが、
+    # expected/actual にはオーダーの情報しか入らないのでそのまま保存
+    data = report.model_dump()
+    # _page_text は巨大になる可能性があるので切り詰め済み
+    filepath.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    logger.info("Verification report saved: %s", filepath)
+    return str(filepath)
+
+
+def _log_verification_summary(report: VerificationReport) -> None:
+    """検証結果のサマリーをログ出力する。"""
+    total = len(report.fields)
+    mismatches = len(report.mismatches)
+
+    if mismatches == 0:
+        logger.info(
+            "VERIFICATION [%s]: ALL MATCH (%d fields checked)",
+            report.order_number,
+            total,
+        )
+    else:
+        logger.warning(
+            "VERIFICATION [%s]: %d MISMATCH(ES) out of %d fields",
+            report.order_number,
+            mismatches,
+            total,
+        )
+        for m in report.mismatches:
+            logger.warning(
+                "  MISMATCH %s: expected=%r, actual=%r",
+                m.field,
+                m.expected,
+                m.actual,
+            )
 
 
 async def _save_draft(page: "Page") -> None:
