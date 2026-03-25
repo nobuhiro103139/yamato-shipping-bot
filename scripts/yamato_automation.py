@@ -522,6 +522,12 @@ async def _select_direct_address_input(page: "Page") -> None:
 
 async def _fill_recipient_info(page: "Page", order: RentalOrder) -> None:
     addr = order.shipping_address
+    logger.info(
+        "Recipient addr: last=%s, first=%s, postal=%s, addr1=%s, addr2=%s, building=%s, chome=%s, banchi=%s, go=%s",
+        addr.last_name, addr.first_name, addr.postal_code,
+        addr.address1, addr.address2, addr.building,
+        addr.chome, addr.banchi, addr.go,
+    )
 
     # Shopify shippingAddress: lastName=姓, firstName=名 — そのまま入力
     await _fill_input(page, YAMATO_SELECTORS["recipient_last_name"], addr.last_name)
@@ -577,8 +583,20 @@ async def _fill_recipient_info(page: "Page", order: RentalOrder) -> None:
 
     if has_popup and has_chome_options:
         # Numbered 丁目 popup — parse address1 for chome-banchi-go
+        # パターン例: "白金台1-4-5 メゾンドジュネス101", "1-2-3", "白金台1丁目4-5"
         if not chome_to_select and addr.address1:
-            match = re.search(r"(\d+)-(\d+)(?:-(\d+))?$", addr.address1)
+            # 先に建物名を分離 (スペース区切りで後半を building 候補)
+            addr1_parts = addr.address1.strip().split(None, 1)
+            addr1_main = addr.address1
+            addr1_building = ""
+            # "1-4-5 メゾンドジュネス101" → 数字部分とbuilding
+            for i, part in enumerate(addr1_parts):
+                if re.search(r"\d+-\d+", part):
+                    addr1_main = part
+                    addr1_building = " ".join(addr1_parts[i + 1:]) if i + 1 < len(addr1_parts) else ""
+                    break
+
+            match = re.search(r"(\d+)-(\d+)(?:-(\d+))?", addr1_main)
             if match:
                 candidate_chome = match.group(1)
                 fullwidth_candidate = candidate_chome.translate(
@@ -590,9 +608,12 @@ async def _fill_recipient_info(page: "Page", order: RentalOrder) -> None:
                     banchi_value = match.group(2)
                     go_value = match.group(3) or ""
                     address_for_field = ""
+                    # 建物名を building として保存 (既存の building が空の場合)
+                    if addr1_building and not addr.building:
+                        addr = addr.model_copy(update={"building": addr1_building})
                     logger.info(
-                        "Parsed chome=%s, banchi=%s, go=%s (confirmed in popup)",
-                        chome_to_select, banchi_value, go_value,
+                        "Parsed chome=%s, banchi=%s, go=%s, building=%s (confirmed in popup)",
+                        chome_to_select, banchi_value, go_value, addr1_building,
                     )
                 else:
                     logger.info(
@@ -654,8 +675,11 @@ async def _fill_recipient_info(page: "Page", order: RentalOrder) -> None:
                     popup_clicked = True
                     logger.info("Clicked section: %s", matched_option)
 
-                    # Parse remaining for banchi-go (e.g., "30-12" -> banchi=30, go=12)
-                    remaining_match = re.match(r"(\d+)(?:-(\d+))?$", remaining_address.lstrip("-"))
+                    # Parse remaining for banchi-go
+                    # e.g., "30-12" -> banchi=30, go=12
+                    # e.g., "6丁目28-20" -> banchi=28, go=20 (丁目部分は住所選択済み)
+                    cleaned_remaining = re.sub(r"^\d+丁目", "", remaining_address.lstrip("-"))
+                    remaining_match = re.match(r"(\d+)(?:-(\d+))?$", cleaned_remaining.lstrip("-"))
                     if remaining_match and not banchi_value:
                         banchi_value = remaining_match.group(1)
                         go_value = remaining_match.group(2) or ""
@@ -695,6 +719,40 @@ async def _fill_recipient_info(page: "Page", order: RentalOrder) -> None:
     if not has_popup and addr.address1:
         logger.info("No address popup after postal lookup; using raw address1: %s", addr.address1)
 
+    # Step 3.5: 都道府県・市区郡町村が空の場合、郵便番号検索を再実行して埋める
+    address1_val = await page.evaluate(
+        "() => (document.querySelector('input[name$=\"address1\"]') || {}).value || ''"
+    )
+    if not address1_val:
+        logger.info("Prefecture/city empty after popup; re-triggering postal lookup")
+        search_btn = page.locator(YAMATO_SELECTORS["address_search_btn"])
+        if await search_btn.count() > 0:
+            await _scroll_and_click(page, search_btn.first)
+            await page.wait_for_timeout(5000)
+
+            # 再度ポップアップが出た場合は同じ選択をする
+            for frame in page.frames:
+                if frame == page.main_frame:
+                    continue
+                try:
+                    frame_text = await frame.locator("body").inner_text(timeout=2000)
+                    if "選択してください" in frame_text or "丁目" in frame_text:
+                        # 前回と同じ選択肢をクリック
+                        if popup_clicked and has_popup:
+                            first_link = frame.locator("a").first
+                            if await first_link.count() > 0:
+                                await first_link.click()
+                                await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
+                        break
+                except Exception:
+                    continue
+
+        # 再チェック
+        address1_val = await page.evaluate(
+            "() => (document.querySelector('input[name$=\"address1\"]') || {}).value || ''"
+        )
+        logger.info("Prefecture/city after re-lookup: '%s'", address1_val)
+
     # Step 4: Fill address fields
     if banchi_value:
         await _fill_input(page, YAMATO_SELECTORS["recipient_address3"], banchi_value)
@@ -720,11 +778,40 @@ async def _fill_recipient_info(page: "Page", order: RentalOrder) -> None:
 
     next_btn = page.locator(YAMATO_SELECTORS["next_btn"])
     await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
-    if await next_btn.count() > 0:
+    btn_count = await next_btn.count()
+    if btn_count > 0:
         is_disabled = await next_btn.first.get_attribute("disabled")
-        if not is_disabled:
-            await next_btn.first.click()
+        if is_disabled:
+            # 次へボタンが無効 — フォームバリデーションをトリガーして有効化を試みる
+            logger.info("Recipient next btn disabled; triggering form validation")
+            await page.evaluate("""() => {
+                document.querySelectorAll('input, select, textarea').forEach(el => {
+                    el.dispatchEvent(new Event('change', {bubbles: true}));
+                    el.dispatchEvent(new Event('input', {bubbles: true}));
+                    el.dispatchEvent(new Event('blur', {bubbles: true}));
+                });
+                if (typeof checkEmptyForm === 'function') checkEmptyForm();
+            }""")
             await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
+            is_disabled = await next_btn.first.get_attribute("disabled")
+
+        if is_disabled:
+            # まだ無効なら disabled 属性を強制除去してクリック
+            logger.warning("Recipient next btn still disabled; force-enabling")
+            await page.evaluate("""() => {
+                const btn = document.querySelector('a#next');
+                if (btn) {
+                    btn.removeAttribute('disabled');
+                    btn.classList.remove('disabled');
+                }
+            }""")
+            await page.wait_for_timeout(TIMEOUT_INPUT_MS)
+
+        await _scroll_and_click(page, next_btn.first)
+        await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
+        logger.info("Recipient next clicked, URL=%s", _safe_url(page.url))
+    else:
+        logger.warning("Recipient next btn (a#next) not found")
 
     # 「アドレス帳に登録しました」ポップアップを閉じる
     ok_btn = page.get_by_text("OK", exact=True)
@@ -736,71 +823,148 @@ async def _fill_recipient_info(page: "Page", order: RentalOrder) -> None:
 
 async def _toggle_notification(page: "Page", email: str) -> None:
     """「お届け先へお届け予定をお知らせする」をチェックし、メールアドレスを入力する。"""
+    toggled = False
     notify_cb = page.locator('input[name*="notifyFlg"]')
     if await notify_cb.count() > 0:
-        if not await notify_cb.first.is_checked():
-            # ラベルをクリックして通知を有効化
-            notify_label = notify_cb.first.locator("xpath=ancestor::label")
-            if await notify_label.count() > 0:
-                await notify_label.first.click()
-            else:
-                # 複数のテキストパターンで探す
-                for text in [
-                    "お届け先へお届け予定をお知らせする",
-                    "届け先への配達予定通知",
-                    "届け予定をお知らせ",
-                ]:
-                    toggle_text = page.get_by_text(text, exact=False)
-                    if await toggle_text.count() > 0:
-                        await toggle_text.first.click()
-                        break
-                else:
-                    await notify_cb.first.click(force=True)
-            await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
-            logger.info("Toggled delivery notification on")
-    else:
-        # notifyFlg が見つからない場合、テキストリンク/ラベルで探す
+        cb = notify_cb.first
+        try:
+            checked = await cb.is_checked()
+        except Exception:
+            checked = False
+        if not checked:
+            # ビューポート外の場合があるため、JS scroll → scroll_into_view → force click の順で試す
+            await page.evaluate("""() => {
+                const el = document.querySelector('input[name*="notifyFlg"]');
+                if (el) el.scrollIntoView({block: 'center'});
+            }""")
+            await page.wait_for_timeout(TIMEOUT_INPUT_MS)
+            try:
+                await cb.scroll_into_view_if_needed()
+            except Exception:
+                pass
+            try:
+                await cb.check(force=True)
+                toggled = True
+                logger.info("Toggled delivery notification via checkbox.check()")
+            except Exception:
+                # JS fallback: checked + click イベント発火
+                try:
+                    await page.evaluate("""() => {
+                        const input = document.querySelector('input[name*="notifyFlg"]');
+                        if (input) {
+                            input.checked = true;
+                            input.click();
+                            input.dispatchEvent(new Event('input', {bubbles: true}));
+                            input.dispatchEvent(new Event('change', {bubbles: true}));
+                        }
+                    }""")
+                    toggled = True
+                    logger.info("Toggled delivery notification via JS fallback")
+                except Exception:
+                    pass
+    if not toggled:
+        # notifyFlg が見つからない/効かない場合、テキストリンク/ラベルで探す
         for text in [
             "お届け先へお届け予定をお知らせする",
             "届け先への配達予定通知",
+            "届け予定をお知らせ",
         ]:
             toggle_text = page.get_by_text(text, exact=False)
             if await toggle_text.count() > 0:
-                await toggle_text.first.click()
+                try:
+                    await toggle_text.first.scroll_into_view_if_needed()
+                except Exception:
+                    pass
+                try:
+                    await toggle_text.first.click(force=True)
+                except Exception:
+                    await page.evaluate(
+                        """(needle) => {
+                            const el = Array.from(document.querySelectorAll('label,span,a,div'))
+                              .find(x => (x.innerText || '').includes(needle));
+                            if (el) el.click();
+                        }""",
+                        text,
+                    )
                 await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
                 logger.info("Toggled delivery notification via text: %s", text)
                 break
 
-    # メールアドレス入力
-    email_input = page.locator('input[name*="mailAddress"]')
+    # メールアドレス入力 — 通知チェック後にメール欄が展開されるのを待つ
+    await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
+
+    # yoteiMailAddr を直接ターゲット (yoteiMailAddrInform は別フィールド)
+    email_input = page.locator('input[type="email"]')
     if await email_input.count() == 0:
-        email_input = page.locator('input[type="email"]')
+        email_input = page.locator('input[name$="yoteiMailAddr"]')
     if await email_input.count() > 0:
-        if await email_input.first.is_visible():
-            await email_input.first.fill(email)
-            await page.wait_for_timeout(TIMEOUT_INPUT_MS)
-            logger.info("Filled notification email")
-        else:
-            logger.warning("Email input not visible, skipping notification email")
+        # 非表示の場合は JS で表示を強制 & スクロール
+        await page.evaluate("""() => {
+            const input = document.querySelector('input[type="email"]')
+                || document.querySelector('input[name$="yoteiMailAddr"]');
+            if (!input) return;
+            let el = input;
+            for (let i = 0; i < 10 && el; i++) {
+                const style = window.getComputedStyle(el);
+                if (style.display === 'none') el.style.display = '';
+                if (style.visibility === 'hidden') el.style.visibility = 'visible';
+                if (style.maxHeight === '0px') el.style.maxHeight = 'none';
+                el = el.parentElement;
+            }
+            input.scrollIntoView({block: 'center'});
+        }""")
+        await page.wait_for_timeout(TIMEOUT_INPUT_MS)
+        try:
+            await email_input.first.fill(email, timeout=5000)
+            logger.info("Filled notification email via Playwright fill")
+        except Exception:
+            # Playwright fill が効かない場合は JS で直接セット
+            await page.evaluate(
+                """(addr) => {
+                    const input = document.querySelector('input[type="email"]')
+                        || document.querySelector('input[name$="yoteiMailAddr"]');
+                    if (input) {
+                        // nativeInputValueSetter でフレームワークのバリデーションを通す
+                        const nativeSetter = Object.getOwnPropertyDescriptor(
+                            window.HTMLInputElement.prototype, 'value'
+                        ).set;
+                        nativeSetter.call(input, addr);
+                        input.dispatchEvent(new Event('input', {bubbles: true}));
+                        input.dispatchEvent(new Event('change', {bubbles: true}));
+                        input.dispatchEvent(new Event('blur', {bubbles: true}));
+                    }
+                }""",
+                email,
+            )
+            logger.info("Filled notification email via JS fallback")
+        await page.wait_for_timeout(TIMEOUT_INPUT_MS)
     else:
         logger.warning("No email input found on page")
 
 
 async def _uncheck_address_book(page: "Page") -> None:
-    cb = page.locator('input[name*="addAddressBook"]')
-    if await cb.count() > 0 and await cb.first.is_checked():
+    """「アドレス帳に登録」チェックボックスをオフにする。"""
+    try:
+        cb = page.locator('input[name*="addAddressBook"]')
+        if await cb.count() == 0:
+            return
+        if not await cb.first.is_checked():
+            return
+        # ラベルクリック → 親label → force click の順で試す
         label = page.get_by_text("入力した情報をアドレス帳へ登録する", exact=False)
         if await label.count() > 0:
             await label.first.click()
             logger.info("Unchecked address book registration")
         else:
-            # フォールバック: ラベル要素を辿ってクリック
             parent_label = cb.first.locator("xpath=ancestor::label")
             if await parent_label.count() > 0:
                 await parent_label.first.click()
             else:
                 await cb.first.click(force=True)
+            logger.info("Unchecked address book registration (fallback)")
         await page.wait_for_timeout(TIMEOUT_INPUT_MS)
+    except Exception:
+        logger.warning("Could not uncheck address book registration (non-fatal)")
 
 
 def _normalize_for_match(text: str) -> str:
@@ -834,28 +998,53 @@ def _sender_matches(candidate_text: str, sender_name: str) -> bool:
 async def _select_sender_from_address_book(
     page: "Page", settings: Settings
 ) -> None:
-    addr_book = page.get_by_text("アドレス帳から選択", exact=False)
-    if await addr_book.count() > 0:
-        await addr_book.first.click()
-        await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
-
     sender_name = settings.sender_name
     if not sender_name:
         raise RuntimeError("SENDER_NAME is not configured")
 
-    # ラジオボタンの親テキストから送り主を探してクリック
-    radio_entries = await page.evaluate("""() => {
-        const radios = document.querySelectorAll('input[type="radio"]');
-        return Array.from(radios).map((r, i) => {
-            let p = r.parentElement;
-            for (let j = 0; j < 5 && p; j++) {
-                if (p.innerText && p.innerText.length > 10)
-                    return {index: i, text: p.innerText.substring(0, 300)};
-                p = p.parentElement;
-            }
-            return {index: i, text: ''};
-        });
-    }""")
+    # アドレス帳リンクをクリック (複数パターン対応)
+    addr_book_clicked = False
+    for addr_text in ["アドレス帳から選択", "アドレス帳"]:
+        addr_book = page.get_by_text(addr_text, exact=False)
+        if await addr_book.count() > 0:
+            await _scroll_and_click(page, addr_book.first)
+            await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
+            addr_book_clicked = True
+            logger.info("Clicked address book link: %s", addr_text)
+            break
+
+    if not addr_book_clicked:
+        logger.warning("Address book link not found; attempting direct sender input")
+        await _fill_sender_info(page, settings)
+        return
+
+    # アドレス帳ページへの遷移を待つ
+    await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
+    logger.info("Sender page URL after address book click: %s", _safe_url(page.url))
+
+    # ラジオボタンの読み込みをリトライ付きで待機
+    radio_entries: list[dict] = []
+    for attempt in range(5):
+        radio_entries = await page.evaluate("""() => {
+            const radios = document.querySelectorAll('input[type="radio"]');
+            return Array.from(radios).map((r, i) => {
+                let p = r.parentElement;
+                for (let j = 0; j < 5 && p; j++) {
+                    if (p.innerText && p.innerText.length > 10)
+                        return {index: i, text: p.innerText.substring(0, 300)};
+                    p = p.parentElement;
+                }
+                return {index: i, text: ''};
+            });
+        }""")
+        if len(radio_entries) > 0:
+            break
+        logger.info("Address book: no radio entries yet (attempt %d/5), waiting...", attempt + 1)
+        await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
+
+    if len(radio_entries) == 0:
+        page_title = await page.evaluate("() => document.title || ''")
+        logger.info("Sender page title: %s (may still be on recipient page)", page_title)
 
     logger.info(
         "Sender address book: %d radio entries found. Looking for '%s'",
@@ -863,7 +1052,6 @@ async def _select_sender_from_address_book(
     )
     for i, entry in enumerate(radio_entries):
         entry_text = entry.get("text", "")
-        # Log first 80 chars of each entry for debugging
         logger.info("  entry[%d]: %s", i, entry_text[:80].replace("\n", " | "))
 
     for entry in radio_entries:
@@ -871,7 +1059,6 @@ async def _select_sender_from_address_book(
         if _sender_matches(entry_text, sender_name):
             idx = entry["index"]
             radio = page.locator("input[type='radio']").nth(idx)
-            # Click the radio's container — try label first, then parent div
             parent_label = radio.locator("xpath=ancestor::label")
             if await parent_label.count() > 0:
                 await parent_label.first.click()
@@ -882,20 +1069,60 @@ async def _select_sender_from_address_book(
             logger.info("Selected sender (matched): %s", sender_name)
             return
 
-    raise RuntimeError(
-        f"Sender '{sender_name}' not found in address book. "
-        f"Saw {len(radio_entries)} entries (check logs for details)."
+    # フォールバック: アドレス帳UIが壊れている/0件に見える場合は依頼主情報を直接入力
+    logger.warning(
+        "Sender '%s' not found in address book (entries=%d). Falling back to manual sender input.",
+        sender_name, len(radio_entries),
     )
+    await _fill_sender_info(page, settings)
+
+
+async def _fill_sender_info(page: "Page", settings: Settings) -> None:
+    """依頼主情報を直接入力するフォールバック。"""
+    if settings.sender_name:
+        sender_name = settings.sender_name.replace("様", "").strip()
+        if " " in sender_name:
+            last, first = sender_name.split(" ", 1)
+        else:
+            last, first = sender_name, ""
+        await _fill_input(page, YAMATO_SELECTORS["sender_last_name"], last)
+        if first:
+            await _fill_input(page, YAMATO_SELECTORS["sender_first_name"], first)
+
+    postal = re.sub(r"\D", "", settings.sender_postal_code or "")
+    if postal:
+        await _fill_input(page, YAMATO_SELECTORS["sender_zip"], postal)
+
+    if settings.sender_address1:
+        await _fill_input(page, YAMATO_SELECTORS["sender_address3"], settings.sender_address1)
+    if settings.sender_address2:
+        await _fill_input(page, YAMATO_SELECTORS["sender_address4"], settings.sender_address2)
+
+    phone = (settings.sender_phone or "").replace("-", "")
+    if phone:
+        await _fill_input(page, YAMATO_SELECTORS["sender_phone"], phone)
+
+    await _uncheck_address_book(page)
+    logger.info("Filled sender info manually as fallback")
 
 
 async def _confirm_sender_info(page: "Page") -> None:
-    # 「次へ」を最大2回クリック: アドレス帳選択→依頼主情報確認→発送場所設定
-    for step in range(2):
+    # 「次へ」を最大3回クリック: アドレス帳選択→依頼主情報確認→発送場所設定
+    # 手動入力フォールバック時はステップが増える場合がある
+    for step in range(3):
+        await _uncheck_address_book(page)
         next_btn = page.get_by_text("次へ", exact=True)
         if await next_btn.count() > 0:
-            await next_btn.first.click()
+            await _scroll_and_click(page, next_btn.first)
             await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
             logger.debug("Sender confirm step %d, URL=%s", step, _safe_url(page.url))
+
+            # 「アドレス帳に登録しました」ポップアップを閉じる
+            ok_btn = page.get_by_text("OK", exact=True)
+            if await ok_btn.count() > 0 and await ok_btn.last.is_visible():
+                await ok_btn.last.click()
+                await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
+                logger.info("Dismissed popup after sender confirm step %d", step)
         else:
             break
 
@@ -1186,6 +1413,30 @@ async def _check_session_error(page: "Page") -> None:
     content = await page.content()
     if "本サービスを継続する" in content:
         raise RuntimeError("Yamato session expired or invalid state")
+
+
+async def _scroll_and_click(page: "Page", locator, timeout_ms: int = 5000) -> None:
+    """スクロール → クリック。viewport 外の要素にも対応。"""
+    # Step 1: JS scrollIntoView で要素をビュー内に持ってくる
+    try:
+        await locator.evaluate("el => el.scrollIntoView({block: 'center', behavior: 'instant'})")
+        await page.wait_for_timeout(TIMEOUT_INPUT_MS)
+    except Exception:
+        pass
+    # Step 2: 通常クリック → force クリック → JS click の順で試す
+    try:
+        await locator.click(timeout=timeout_ms)
+        return
+    except Exception:
+        pass
+    try:
+        await locator.click(force=True)
+        return
+    except Exception:
+        pass
+    # Step 3: JS 直接クリック (最終手段)
+    await locator.evaluate("el => el.click()")
+    await page.wait_for_timeout(TIMEOUT_INPUT_MS)
 
 
 async def _fill_input(
