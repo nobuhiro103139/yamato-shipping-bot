@@ -67,6 +67,20 @@ PACKAGE_SIZE_TO_RADIO_VALUE: dict[PackageSize, str] = {
     PackageSize.LL: "LL",
 }
 
+# 配達時間帯の表示名 → select value のマッピング
+# 確認ページではテキスト表示されるため、テキストから逆引きする
+TIME_SLOT_DISPLAY_TO_VALUE: dict[str, str] = {
+    "午前中": "1",
+    "14時~16時": "3",
+    "14時～16時": "3",
+    "16時~18時": "4",
+    "16時～18時": "4",
+    "18時~20時": "5",
+    "18時～20時": "5",
+    "19時~21時": "7",
+    "19時～21時": "7",
+}
+
 PACKAGE_COUNT_IDS: dict[int, str] = {
     1: "one",
     2: "two",
@@ -191,7 +205,10 @@ async def _run_yamato_automation(
             await _fill_delivery_datetime(page, order)
             logger.info("STEP: delivery_datetime done")
 
-            # === 保存後確認フェーズ: 保存前にページ上の値を取得 ===
+            # === 検証フェーズ: 設定内容の確認ページで確定値をテキストから取得 ===
+            # このページ (設定内容の確認) にはフォーム要素 (select/input) が
+            # 存在しないが、配達日時・メールなどの確定値がテキスト表示されている。
+            # テキストベースのフォールバックで正しく抽出する。
             verification = await _verify_confirmation(page, order, settings)
             _log_verification_summary(verification)
             verification_path = _save_verification_report(verification)
@@ -1703,6 +1720,15 @@ async def _verify_confirmation(
 
         # 9. 配達時間
         actual_time = scraped.get("delivery_time", "")
+        if not actual_time and page_text:
+            # 確認ページでは select 要素がなくテキスト表示 (例: "午前中")
+            # NFKC 正規化したテキストでもマッチさせる
+            normalized_text = unicodedata.normalize("NFKC", page_text)
+            for display_name, val in TIME_SLOT_DISPLAY_TO_VALUE.items():
+                norm_display = unicodedata.normalize("NFKC", display_name)
+                if norm_display in normalized_text or display_name in page_text:
+                    actual_time = val
+                    break
         report.add(
             "delivery_time",
             expected.get("delivery_time", ""),
@@ -1728,6 +1754,21 @@ async def _verify_confirmation(
 
         # 11. 通知メール
         actual_email = scraped.get("notification_email", "")
+        if not actual_email or "@" not in actual_email:
+            # フォーム要素が存在しない確認ページでは input 値が取れないため
+            # ページテキストから期待するメールアドレスの存在を確認する
+            if expected.get("notification_email") and page_text:
+                if expected["notification_email"] in page_text:
+                    actual_email = expected["notification_email"]
+                else:
+                    # 一般的なメールアドレスパターンで抽出を試みる
+                    email_matches = re.findall(
+                        r"[\w.+-]+@[\w.-]+\.\w+", page_text,
+                    )
+                    for em in email_matches:
+                        if em == expected["notification_email"]:
+                            actual_email = em
+                            break
         if expected.get("notification_email"):
             report.add(
                 "notification_email",
