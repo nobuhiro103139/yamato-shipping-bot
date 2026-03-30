@@ -71,14 +71,24 @@ PACKAGE_SIZE_TO_RADIO_VALUE: dict[PackageSize, str] = {
 # 確認ページではテキスト表示されるため、テキストから逆引きする
 TIME_SLOT_DISPLAY_TO_VALUE: dict[str, str] = {
     "午前中": "1",
+    "8:00~12:00": "1",
+    "8:00～12:00": "1",
     "14時~16時": "3",
     "14時～16時": "3",
+    "14:00~16:00": "3",
+    "14:00～16:00": "3",
     "16時~18時": "4",
     "16時～18時": "4",
+    "16:00~18:00": "4",
+    "16:00～18:00": "4",
     "18時~20時": "5",
     "18時～20時": "5",
+    "18:00~20:00": "5",
+    "18:00～20:00": "5",
     "19時~21時": "7",
     "19時～21時": "7",
+    "19:00~21:00": "7",
+    "19:00～21:00": "7",
 }
 
 PACKAGE_COUNT_IDS: dict[int, str] = {
@@ -118,6 +128,190 @@ YAMATO_SELECTORS = {
     "login_form_password": "#login-form-password",
     "login_form_submit": "#login-form-submit",
 }
+
+
+def _extract_delivery_time_from_text(page_text: str) -> str:
+    normalized_text = unicodedata.normalize("NFKC", page_text or "")
+    for display_name, val in TIME_SLOT_DISPLAY_TO_VALUE.items():
+        norm_display = unicodedata.normalize("NFKC", display_name)
+        if norm_display in normalized_text or display_name in page_text:
+            return val
+    return ""
+
+
+def _parse_kanji_number(token: str) -> int | None:
+    token = token.strip()
+    if not token:
+        return None
+
+    if token.isdigit():
+        return int(token)
+
+    digit_map = {
+        "〇": 0,
+        "零": 0,
+        "一": 1,
+        "二": 2,
+        "三": 3,
+        "四": 4,
+        "五": 5,
+        "六": 6,
+        "七": 7,
+        "八": 8,
+        "九": 9,
+    }
+    unit_map = {"十": 10, "百": 100}
+
+    total = 0
+    current = 0
+    for ch in token:
+        if ch in digit_map:
+            current = digit_map[ch]
+            continue
+        if ch in unit_map:
+            unit = unit_map[ch]
+            total += (current or 1) * unit
+            current = 0
+            continue
+        return None
+
+    return total + current
+
+
+def _normalize_chome_token(token: str) -> str:
+    normalized = unicodedata.normalize("NFKC", token or "").strip()
+    if not normalized:
+        return ""
+    if normalized.isdigit():
+        return normalized
+    parsed = _parse_kanji_number(normalized)
+    return str(parsed) if parsed is not None else ""
+
+
+def _parse_address_line_components(address1: str) -> dict[str, str]:
+    parsed = {
+        "chome": "",
+        "banchi": "",
+        "go": "",
+        "building": "",
+    }
+    normalized = unicodedata.normalize("NFKC", address1 or "").strip()
+    if not normalized:
+        return parsed
+
+    match = re.search(
+        r"(?P<chome>[0-9一二三四五六七八九十百〇零]+)丁目(?P<rest>.*)$",
+        normalized,
+    )
+    if match:
+        parsed["chome"] = _normalize_chome_token(match.group("chome"))
+        rest = match.group("rest").strip()
+    else:
+        rest_match = re.search(
+            r"(?P<chome>\d+)-(?P<banchi>\d+)(?:-(?P<go>\d+))?(?P<tail>.*)$",
+            normalized,
+        )
+        if rest_match:
+            parsed["chome"] = rest_match.group("chome")
+            parsed["banchi"] = rest_match.group("banchi")
+            parsed["go"] = rest_match.group("go") or ""
+            parsed["building"] = rest_match.group("tail").strip()
+        return parsed
+
+    rest = rest.lstrip("-")
+    rest_match = re.match(
+        r"(?P<banchi>\d+)(?:-(?P<go>\d+))?(?P<tail>.*)$",
+        rest,
+    )
+    if rest_match:
+        parsed["banchi"] = rest_match.group("banchi")
+        parsed["go"] = rest_match.group("go") or ""
+        parsed["building"] = rest_match.group("tail").strip()
+
+    return parsed
+
+
+async def _get_page_markers(page: "Page") -> dict[str, bool]:
+    recipient_inputs = page.locator(
+        YAMATO_SELECTORS["recipient_last_name"]
+    )
+    sender_inputs = page.locator(
+        YAMATO_SELECTORS["sender_last_name"]
+    )
+    shipping_date_select = page.locator(
+        YAMATO_SELECTORS["shipping_date"]
+    )
+    save_return = page.locator("a#saveReturn")
+    do_payment_forward = page.locator("a#doPaymentForward")
+
+    return {
+        "recipient_inputs": await recipient_inputs.count() > 0,
+        "sender_inputs": await sender_inputs.count() > 0,
+        "shipping_date_select": await shipping_date_select.count() > 0,
+        "save_return": await save_return.count() > 0,
+        "payment_forward": await do_payment_forward.count() > 0,
+    }
+
+
+async def _assert_recipient_step_advanced(page: "Page") -> None:
+    markers = await _get_page_markers(page)
+    if not markers["recipient_inputs"]:
+        return
+
+    # Capture form field values for diagnosis
+    field_snapshot = await page.evaluate("""() => {
+        const fields = {};
+        const selectors = {
+            lastName: 'input[name="viwb3040ActionBean.lastName"]',
+            firstName: 'input[name="viwb3040ActionBean.firstName"]',
+            zipCode: 'input[name="viwb3040ActionBean.zipCode"]',
+            address1: 'input[name="viwb3040ActionBean.address1"]',
+            address2: 'input[name="viwb3040ActionBean.address2"]',
+            address3: 'input[name="viwb3040ActionBean.address3"]',
+            address3opt: 'input[name="viwb3040ActionBean.address3opt"]',
+            address4: 'input[name="viwb3040ActionBean.address4"]',
+            phoneNumber: 'input[name="viwb3040ActionBean.phoneNumber"]',
+        };
+        for (const [name, sel] of Object.entries(selectors)) {
+            const el = document.querySelector(sel);
+            fields[name] = el ? el.value : '(not found)';
+        }
+        return fields;
+    }""")
+    empty_fields = [k for k, v in field_snapshot.items() if v in ('', '(not found)')]
+
+    page_text = await page.evaluate(
+        "() => (document.body && document.body.innerText) || ''"
+    )
+    error_lines = [
+        line.strip()
+        for line in page_text.splitlines()
+        if any(token in line for token in ("正しく", "エラー", "入力してください"))
+        and "入力した情報" not in line
+    ]
+    error_preview = " | ".join(error_lines[:5])
+    raise RuntimeError(
+        "Recipient step did not advance; still on recipient input page"
+        + (f"; empty_fields={empty_fields}" if empty_fields else "")
+        + (f"; errors=[{error_preview}]" if error_preview else "")
+        + f"; field_snapshot={json.dumps(field_snapshot, ensure_ascii=False)}"
+    )
+
+
+async def _assert_confirmation_page(page: "Page", context: str) -> None:
+    markers = await _get_page_markers(page)
+    if markers["save_return"] or markers["payment_forward"]:
+        if markers["recipient_inputs"]:
+            raise RuntimeError(
+                f"{context}: confirmation/save controls are visible but recipient input page is still active"
+            )
+        return
+
+    page_title = await page.evaluate("() => document.title || ''")
+    raise RuntimeError(
+        f"{context}: not on confirmation page "
+        f"(url={_safe_url(page.url)}, title={page_title!r}, markers={markers})"
+    )
 
 
 async def process_shipment(order: RentalOrder) -> ShippingResult:
@@ -209,6 +403,7 @@ async def _run_yamato_automation(
             # このページ (設定内容の確認) にはフォーム要素 (select/input) が
             # 存在しないが、配達日時・メールなどの確定値がテキスト表示されている。
             # テキストベースのフォールバックで正しく抽出する。
+            await _assert_confirmation_page(page, "Verification")
             verification = await _verify_confirmation(page, order, settings)
             _log_verification_summary(verification)
             verification_path = _save_verification_report(verification)
@@ -220,6 +415,7 @@ async def _run_yamato_automation(
             )
             await page.screenshot(path=pre_save_screenshot, full_page=True)
 
+            await _assert_confirmation_page(page, "Save draft")
             await _save_draft(page)
             logger.info("STEP: save_draft done")
 
@@ -587,6 +783,24 @@ async def _fill_recipient_info(page: "Page", order: RentalOrder) -> None:
     banchi_value = addr.banchi
     go_value = addr.go
     address_for_field = addr.address1
+    selected_popup_text = ""
+    parsed_address1 = _parse_address_line_components(addr.address1)
+
+    if parsed_address1["chome"] and not chome_to_select:
+        chome_to_select = parsed_address1["chome"]
+    if parsed_address1["banchi"] and not banchi_value:
+        banchi_value = parsed_address1["banchi"]
+    if parsed_address1["go"] and not go_value:
+        go_value = parsed_address1["go"]
+    if parsed_address1["chome"] and parsed_address1["banchi"]:
+        address_for_field = ""
+        if parsed_address1["building"] and not addr.building:
+            addr = addr.model_copy(update={"building": parsed_address1["building"]})
+    logger.info(
+        "Parsed address1 components: chome=%s, banchi=%s, go=%s, building=%s",
+        parsed_address1["chome"], parsed_address1["banchi"],
+        parsed_address1["go"], parsed_address1["building"],
+    )
 
     # Step 1: Detect any address-selection popup in iframe
     # Yamato shows either numbered 丁目 options OR named 字/町 sections
@@ -677,6 +891,7 @@ async def _fill_recipient_info(page: "Page", order: RentalOrder) -> None:
                             await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
                             logger.info("Selected chome: %s", txt)
                             popup_clicked = True
+                            selected_popup_text = txt
                             break
                     except Exception:
                         continue
@@ -713,6 +928,7 @@ async def _fill_recipient_info(page: "Page", order: RentalOrder) -> None:
                     await loc.first.click()
                     await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
                     popup_clicked = True
+                    selected_popup_text = matched_option
                     logger.info("Clicked section: %s", matched_option)
 
                     # Parse remaining for banchi-go
@@ -741,20 +957,12 @@ async def _fill_recipient_info(page: "Page", order: RentalOrder) -> None:
                     addr.address1, all_popup_options,
                 )
 
-    # Step 3: If popup is still open and unclicked, dismiss with first option as fallback
+    # Step 3: Don't corrupt the address by clicking an arbitrary fallback option.
     if has_popup and not popup_clicked:
-        logger.info("Popup still open; clicking first option as fallback to dismiss")
-        try:
-            first_link = popup_frame.locator("a").first
-            if await first_link.count() > 0:
-                first_text = await first_link.inner_text()
-                await first_link.click()
-                await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
-                popup_clicked = True
-                logger.info("Fallback: clicked '%s'", first_text)
-                # Keep raw address1 in address_for_field since we didn't match properly
-        except Exception:
-            logger.warning("Failed to click fallback popup option")
+        raise RuntimeError(
+            "Address popup appeared but no matching option could be selected; "
+            f"address1={addr.address1!r}, options={all_popup_options}"
+        )
 
     if not has_popup and addr.address1:
         logger.info("No address popup after postal lookup; using raw address1: %s", addr.address1)
@@ -778,11 +986,19 @@ async def _fill_recipient_info(page: "Page", order: RentalOrder) -> None:
                     frame_text = await frame.locator("body").inner_text(timeout=2000)
                     if "選択してください" in frame_text or "丁目" in frame_text:
                         # 前回と同じ選択肢をクリック
-                        if popup_clicked and has_popup:
-                            first_link = frame.locator("a").first
-                            if await first_link.count() > 0:
-                                await first_link.click()
-                                await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
+                        if popup_clicked and has_popup and selected_popup_text:
+                            for loc in [
+                                frame.get_by_text(selected_popup_text, exact=True),
+                                frame.get_by_role("link", name=selected_popup_text),
+                                frame.locator(f"a:has-text('{selected_popup_text}')"),
+                            ]:
+                                try:
+                                    if await loc.count() > 0:
+                                        await loc.first.click()
+                                        await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
+                                        break
+                                except Exception:
+                                    continue
                         break
                 except Exception:
                     continue
@@ -793,7 +1009,26 @@ async def _fill_recipient_info(page: "Page", order: RentalOrder) -> None:
         )
         logger.info("Prefecture/city after re-lookup: '%s'", address1_val)
 
-    # Step 4: Fill address fields
+    # Step 4: Ensure address2 hidden input exists (Yamato renders it as read-only
+    # display after postal lookup, so the form may lack the actual input element).
+    # Create it from registAddress2 + registChome if absent.
+    await page.evaluate("""() => {
+        const form = document.querySelector('form') || document.body;
+        const existing = document.querySelector('input[name="viwb3040ActionBean.address2"]');
+        if (existing) return;  // already present
+        const regAddr2 = document.querySelector('input[name="viwb3040ActionBean.registAddress2"]');
+        const regChome = document.querySelector('input[name="viwb3040ActionBean.registChome"]');
+        const val = (regAddr2 ? regAddr2.value : '') + (regChome ? regChome.value : '');
+        if (val) {
+            const hidden = document.createElement('input');
+            hidden.type = 'hidden';
+            hidden.name = 'viwb3040ActionBean.address2';
+            hidden.value = val;
+            form.appendChild(hidden);
+        }
+    }""")
+
+    # Step 5: Fill address fields
     if banchi_value:
         await _fill_input(page, YAMATO_SELECTORS["recipient_address3"], banchi_value)
     elif address_for_field:
@@ -822,7 +1057,7 @@ async def _fill_recipient_info(page: "Page", order: RentalOrder) -> None:
     if btn_count > 0:
         is_disabled = await next_btn.first.get_attribute("disabled")
         if is_disabled:
-            # 次へボタンが無効 — フォームバリデーションをトリガーして有効化を試みる
+            # 次へボタンが無効なら、入力反映を促したうえで明示的に失敗させる。
             logger.info("Recipient next btn disabled; triggering form validation")
             await page.evaluate("""() => {
                 document.querySelectorAll('input, select, textarea').forEach(el => {
@@ -836,20 +1071,28 @@ async def _fill_recipient_info(page: "Page", order: RentalOrder) -> None:
             is_disabled = await next_btn.first.get_attribute("disabled")
 
         if is_disabled:
-            # まだ無効なら disabled 属性を強制除去してクリック
-            logger.warning("Recipient next btn still disabled; force-enabling")
-            await page.evaluate("""() => {
-                const btn = document.querySelector('a#next');
-                if (btn) {
-                    btn.removeAttribute('disabled');
-                    btn.classList.remove('disabled');
-                }
-            }""")
-            await page.wait_for_timeout(TIMEOUT_INPUT_MS)
+            raise RuntimeError(
+                "Recipient step validation failed; next button is still disabled"
+            )
 
         await _scroll_and_click(page, next_btn.first)
         await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
         logger.info("Recipient next clicked, URL=%s", _safe_url(page.url))
+
+        # アドレス帳登録エラーバナー/ポップアップを検出して閉じる
+        addr_book_error = await _dismiss_address_book_error(page)
+        if addr_book_error:
+            # エラーを閉じた後、再度「次へ」をクリック
+            logger.info("Retrying recipient next after dismissing address book error")
+            await _uncheck_address_book(page)
+            await page.wait_for_timeout(TIMEOUT_INPUT_MS)
+            next_btn2 = page.locator(YAMATO_SELECTORS["next_btn"])
+            if await next_btn2.count() > 0:
+                await _scroll_and_click(page, next_btn2.first)
+                await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
+                logger.info("Recipient next re-clicked, URL=%s", _safe_url(page.url))
+
+        await _assert_recipient_step_advanced(page)
     else:
         logger.warning("Recipient next btn (a#next) not found")
 
@@ -982,29 +1225,71 @@ async def _toggle_notification(page: "Page", email: str) -> None:
         logger.warning("No email input found on page")
 
 
-async def _uncheck_address_book(page: "Page") -> None:
-    """「アドレス帳に登録」チェックボックスをオフにする。"""
+async def _dismiss_address_book_error(page: "Page") -> bool:
+    """「アドレス帳に登録できませんでした」エラーバナー/ポップアップを検出して閉じる。
+
+    Returns True if the error was found and dismissed.
+    """
     try:
-        cb = page.locator('input[name*="addAddressBook"]')
-        if await cb.count() == 0:
-            return
-        if not await cb.first.is_checked():
-            return
-        # ラベルクリック → 親label → force click の順で試す
+        page_text = await page.evaluate(
+            "() => (document.body && document.body.innerText) || ''"
+        )
+        if "アドレス帳に登録できませんでした" in page_text:
+            logger.warning("Detected address book registration error banner")
+            # OKボタンやCloseボタンでポップアップを閉じる
+            for text in ["OK", "閉じる", "Close"]:
+                btn = page.get_by_text(text, exact=True)
+                if await btn.count() > 0:
+                    for i in range(await btn.count()):
+                        try:
+                            if await btn.nth(i).is_visible():
+                                await btn.nth(i).click()
+                                await page.wait_for_timeout(TIMEOUT_INPUT_MS)
+                                logger.info("Dismissed address book error via '%s' button", text)
+                                return True
+                        except Exception:
+                            continue
+            # ボタンが見つからない場合、エラー要素を非表示にしてみる
+            await page.evaluate("""() => {
+                document.querySelectorAll('.error, .alert, [class*="error"], [class*="alert"], [class*="popup"]').forEach(el => {
+                    if ((el.innerText || '').includes('アドレス帳')) el.style.display = 'none';
+                });
+            }""")
+            logger.info("Hid address book error elements via JS")
+            return True
+    except Exception as exc:
+        logger.warning("Error checking for address book error banner: %s", exc)
+    return False
+
+
+async def _uncheck_address_book(page: "Page") -> None:
+    """「アドレス帳に登録」チェックボックスをオフにする。
+
+    Yamato uses 'addressListToRegister' hidden field.  The visible checkbox
+    name varies, so we also force the hidden field to 'false' as a safety net.
+    """
+    try:
+        # Try clicking the visible label to toggle off
         label = page.get_by_text("入力した情報をアドレス帳へ登録する", exact=False)
         if await label.count() > 0:
-            await label.first.click()
-            logger.info("Unchecked address book registration")
-        else:
-            parent_label = cb.first.locator("xpath=ancestor::label")
-            if await parent_label.count() > 0:
-                await parent_label.first.click()
-            else:
-                await cb.first.click(force=True)
-            logger.info("Unchecked address book registration (fallback)")
-        await page.wait_for_timeout(TIMEOUT_INPUT_MS)
+            is_reg = await page.evaluate(
+                "() => (document.querySelector('input[name$=\"addressListToRegister\"]') || {}).value"
+            )
+            if is_reg == "true":
+                await label.first.click()
+                await page.wait_for_timeout(TIMEOUT_INPUT_MS)
+                logger.info("Unchecked address book registration via label")
     except Exception:
-        logger.warning("Could not uncheck address book registration (non-fatal)")
+        pass
+
+    # Safety net: force the hidden field to false regardless
+    try:
+        await page.evaluate("""() => {
+            const el = document.querySelector('input[name$="addressListToRegister"]');
+            if (el) el.value = 'false';
+        }""")
+    except Exception:
+        logger.warning("Could not force addressListToRegister to false")
 
 
 def _normalize_for_match(text: str) -> str:
@@ -1157,7 +1442,8 @@ async def _confirm_sender_info(page: "Page") -> None:
             await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
             logger.debug("Sender confirm step %d, URL=%s", step, _safe_url(page.url))
 
-            # 「アドレス帳に登録しました」ポップアップを閉じる
+            # アドレス帳エラー/登録ポップアップを閉じる
+            await _dismiss_address_book_error(page)
             ok_btn = page.get_by_text("OK", exact=True)
             if await ok_btn.count() > 0 and await ok_btn.last.is_visible():
                 await ok_btn.last.click()
@@ -1309,18 +1595,26 @@ async def _fill_delivery_datetime(page: "Page", order: RentalOrder) -> None:
     logger.info("Available shipping dates: %s", shipping_options)
 
     # 発送日候補: 到着希望日の前日優先 → 2日前 → 当日
-    ship_dates = [
+    raw_ship_dates = [
         (delivery_dt - timedelta(days=1)).strftime("%Y%m%d"),
         (delivery_dt - timedelta(days=2)).strftime("%Y%m%d"),
         delivery_dt.strftime("%Y%m%d"),
     ]
+    ship_dates = list(dict.fromkeys(raw_ship_dates))
     logger.info("Will try shipping dates: %s for delivery %s", ship_dates, order.delivery_date)
 
-    date_set = False
+    combination_set = False
+    failure_reasons: list[str] = []
+    time_value = (
+        order.delivery_time.value
+        if hasattr(order.delivery_time, "value")
+        else str(order.delivery_time)
+    )
     for ship_date in ship_dates:
         option = shipping_select.first.locator(f'option[value="{ship_date}"]')
         if await option.count() == 0:
             logger.debug("Ship date %s not available", ship_date)
+            failure_reasons.append(f"ship={ship_date}: shipping date unavailable")
             continue
 
         await shipping_select.first.select_option(value=ship_date)
@@ -1331,6 +1625,7 @@ async def _fill_delivery_datetime(page: "Page", order: RentalOrder) -> None:
         delivery_select = page.locator(YAMATO_SELECTORS["delivery_date"])
         if await delivery_select.count() == 0:
             logger.warning("Delivery date select not found after setting ship date")
+            failure_reasons.append(f"ship={ship_date}: delivery date select missing")
             continue
 
         delivery_options = await delivery_select.first.evaluate("""el => {
@@ -1343,17 +1638,19 @@ async def _fill_delivery_datetime(page: "Page", order: RentalOrder) -> None:
         )
         if await delivery_option.count() == 0:
             logger.debug("Delivery date %s not in options for ship=%s", order.delivery_date, ship_date)
+            failure_reasons.append(
+                f"ship={ship_date}: delivery date {order.delivery_date} unavailable"
+            )
             continue
 
         await delivery_select.first.select_option(value=order.delivery_date)
         await page.wait_for_timeout(TIMEOUT_DROPDOWN_UPDATE_MS)
         logger.info("Selected delivery date: %s", order.delivery_date)
-        date_set = True
 
         # --- 時間帯の設定 ---
-        time_value = order.delivery_time.value if hasattr(order.delivery_time, "value") else str(order.delivery_time)
         if not time_value or time_value == "0":
             logger.info("No delivery time requested; skipping time selection")
+            combination_set = True
             break
 
         # 時間帯 select の再取得 (到着日変更で時間帯オプションが変わる)
@@ -1365,7 +1662,8 @@ async def _fill_delivery_datetime(page: "Page", order: RentalOrder) -> None:
 
         if await time_select.count() == 0:
             logger.warning("Time select not found")
-            break
+            failure_reasons.append(f"ship={ship_date}: time select missing")
+            continue
 
         enabled_options = await time_select.evaluate("""el => {
             return Array.from(el.options).map(o => ({
@@ -1378,38 +1676,51 @@ async def _fill_delivery_datetime(page: "Page", order: RentalOrder) -> None:
             o["value"] == time_value and not o["disabled"]
             for o in enabled_options
         )
-        chosen_time = time_value if target_enabled else next(
-            (o["value"] for o in enabled_options
-             if not o["disabled"] and o["value"] not in ("0", "")),
-            None
-        )
-        if chosen_time:
-            try:
-                await time_select.select_option(value=chosen_time, timeout=5000)
-            except Exception:
-                # JS フォールバック: select_option が効かない場合
-                await page.evaluate(f"""() => {{
-                    const sel = document.querySelector('#timeToReceiveByTZone')
-                        || document.querySelector('select[name="viwb4100ActionBean.timeToReceive"]');
-                    if (sel) {{
-                        sel.value = '{chosen_time}';
-                        sel.dispatchEvent(new Event('change', {{bubbles: true}}));
-                    }}
-                }}""")
-            await page.wait_for_timeout(TIMEOUT_INPUT_MS)
+        if not target_enabled:
+            available_times = [
+                f"{o['value']}:{o['text']}"
+                for o in enabled_options
+                if not o["disabled"] and o["value"] not in ("0", "")
+            ]
             logger.info(
-                "Set delivery: ship=%s, deliver=%s, time=%s%s",
-                ship_date, order.delivery_date, chosen_time,
-                " (fallback)" if chosen_time != time_value else "",
+                "Requested delivery time %s unavailable for ship=%s, delivery=%s; trying next ship date. Available=%s",
+                time_value,
+                ship_date,
+                order.delivery_date,
+                available_times,
             )
-        else:
-            logger.warning("No enabled time option found")
+            failure_reasons.append(
+                f"ship={ship_date}: requested time {time_value} unavailable; available={available_times}"
+            )
+            continue
+
+        try:
+            await time_select.select_option(value=time_value, timeout=5000)
+        except Exception:
+            # JS フォールバック: select_option が効かない場合
+            await page.evaluate(f"""() => {{
+                const sel = document.querySelector('#timeToReceiveByTZone')
+                    || document.querySelector('select[name="viwb4100ActionBean.timeToReceive"]');
+                if (sel) {{
+                    sel.value = '{time_value}';
+                    sel.dispatchEvent(new Event('change', {{bubbles: true}}));
+                }}
+            }}""")
+        await page.wait_for_timeout(TIMEOUT_INPUT_MS)
+        logger.info(
+            "Set delivery: ship=%s, deliver=%s, time=%s",
+            ship_date, order.delivery_date, time_value,
+        )
+        combination_set = True
         break
 
-    if not date_set:
-        logger.warning(
-            "Could not set delivery date %s with any shipping date %s",
-            order.delivery_date, ship_dates,
+    if not combination_set:
+        raise RuntimeError(
+            "Could not satisfy requested delivery combination: "
+            f"delivery_date={order.delivery_date}, "
+            f"delivery_time={time_value or '0'}, "
+            f"candidates={ship_dates}, "
+            f"reasons={failure_reasons}"
         )
 
     # 「設定する」または「次へ」で確定
@@ -1721,14 +2032,7 @@ async def _verify_confirmation(
         # 9. 配達時間
         actual_time = scraped.get("delivery_time", "")
         if not actual_time and page_text:
-            # 確認ページでは select 要素がなくテキスト表示 (例: "午前中")
-            # NFKC 正規化したテキストでもマッチさせる
-            normalized_text = unicodedata.normalize("NFKC", page_text)
-            for display_name, val in TIME_SLOT_DISPLAY_TO_VALUE.items():
-                norm_display = unicodedata.normalize("NFKC", display_name)
-                if norm_display in normalized_text or display_name in page_text:
-                    actual_time = val
-                    break
+            actual_time = _extract_delivery_time_from_text(page_text)
         report.add(
             "delivery_time",
             expected.get("delivery_time", ""),
