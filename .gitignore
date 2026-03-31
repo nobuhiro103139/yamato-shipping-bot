@@ -17,3 +17,5 @@ poetry.lock
 .DS_Store
 .playwright/
 uv.lock
+.codex-run-logs/
+.openclaw-results/

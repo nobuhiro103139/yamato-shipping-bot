@@ -1715,13 +1715,47 @@ async def _fill_delivery_datetime(page: "Page", order: RentalOrder) -> None:
         break
 
     if not combination_set:
-        raise RuntimeError(
-            "Could not satisfy requested delivery combination: "
-            f"delivery_date={order.delivery_date}, "
-            f"delivery_time={time_value or '0'}, "
-            f"candidates={ship_dates}, "
-            f"reasons={failure_reasons}"
+        # Draft-first: 完全一致が見つからなくても、配達日だけでもセットしてドラフト作成を継続する。
+        # 検証フェーズでミスマッチとして報告される。
+        logger.warning(
+            "DRAFT-FIRST: exact delivery combination unavailable "
+            "(delivery_date=%s, delivery_time=%s, candidates=%s, reasons=%s). "
+            "Attempting fallback to proceed with draft creation.",
+            order.delivery_date, time_value or "0", ship_dates, failure_reasons,
         )
+        # フォールバック: 発送日→配達日だけをセットし、時間帯は指定なしで続行
+        fallback_set = False
+        for ship_date in ship_dates:
+            option = shipping_select.first.locator(f'option[value="{ship_date}"]')
+            if await option.count() == 0:
+                continue
+            await shipping_select.first.select_option(value=ship_date)
+            await page.wait_for_timeout(TIMEOUT_DROPDOWN_UPDATE_MS)
+            delivery_select = page.locator(YAMATO_SELECTORS["delivery_date"])
+            if await delivery_select.count() == 0:
+                continue
+            delivery_option = delivery_select.first.locator(
+                f'option[value="{order.delivery_date}"]'
+            )
+            if await delivery_option.count() > 0:
+                await delivery_select.first.select_option(value=order.delivery_date)
+                await page.wait_for_timeout(TIMEOUT_DROPDOWN_UPDATE_MS)
+                logger.info(
+                    "DRAFT-FIRST fallback: set ship=%s, deliver=%s, time=none",
+                    ship_date, order.delivery_date,
+                )
+                fallback_set = True
+                break
+        if not fallback_set:
+            # 配達日すらセットできない場合は真にブロッキング
+            raise RuntimeError(
+                "Could not satisfy requested delivery combination "
+                "(even fallback failed): "
+                f"delivery_date={order.delivery_date}, "
+                f"delivery_time={time_value or '0'}, "
+                f"candidates={ship_dates}, "
+                f"reasons={failure_reasons}"
+            )
 
     # 「設定する」または「次へ」で確定
     for btn_text in ["設定する", "次へ"]:
