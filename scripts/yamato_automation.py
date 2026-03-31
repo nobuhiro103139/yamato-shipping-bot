@@ -207,12 +207,14 @@ def _parse_address_line_components(address1: str) -> dict[str, str]:
         parsed["chome"] = _normalize_chome_token(match.group("chome"))
         rest = match.group("rest").strip()
     else:
+        # No 丁目 found — do NOT guess chome from bare numeric patterns
+        # like "659-1".  Only extract banchi/go so the raw address is
+        # preserved and the popup-confirmation path can decide chome later.
         rest_match = re.search(
-            r"(?P<chome>\d+)-(?P<banchi>\d+)(?:-(?P<go>\d+))?(?P<tail>.*)$",
+            r"(?P<banchi>\d+)(?:-(?P<go>\d+))?(?P<tail>.*)$",
             normalized,
         )
         if rest_match:
-            parsed["chome"] = rest_match.group("chome")
             parsed["banchi"] = rest_match.group("banchi")
             parsed["go"] = rest_match.group("go") or ""
             parsed["building"] = rest_match.group("tail").strip()

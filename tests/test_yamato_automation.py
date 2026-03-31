@@ -32,3 +32,19 @@ def test_parse_address_line_components_with_named_prefix_and_chome():
         "go": "59",
         "building": "",
     }
+
+
+def test_parse_address_line_components_no_chome_numeric_only():
+    """659-1 should NOT be treated as chome=659 — no 丁目 evidence."""
+    parsed = _parse_address_line_components("津高659-1")
+    assert parsed["chome"] == ""
+    assert parsed["banchi"] == "659"
+    assert parsed["go"] == "1"
+
+
+def test_parse_address_line_components_bare_number():
+    """Single number without hyphen should become banchi only."""
+    parsed = _parse_address_line_components("津高42")
+    assert parsed["chome"] == ""
+    assert parsed["banchi"] == "42"
+    assert parsed["go"] == ""
