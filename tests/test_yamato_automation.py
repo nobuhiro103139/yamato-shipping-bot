@@ -1,5 +1,6 @@
 from scripts.yamato_automation import (
     _extract_delivery_time_from_text,
+    _normalize_recipient_phone,
     _parse_address_line_components,
 )
 
@@ -48,3 +49,30 @@ def test_parse_address_line_components_bare_number():
     assert parsed["chome"] == ""
     assert parsed["banchi"] == "42"
     assert parsed["go"] == ""
+
+
+# --- Phone normalization policy tests ---
+
+def test_normalize_recipient_phone_japanese_intl():
+    """Japanese +81 numbers should convert to domestic 0-prefix format."""
+    assert _normalize_recipient_phone("+81-90-1234-5678") == "09012345678"
+    assert _normalize_recipient_phone("+8190 1234 5678") == "09012345678"
+
+
+def test_normalize_recipient_phone_domestic():
+    """Domestic Japanese numbers pass through unchanged."""
+    assert _normalize_recipient_phone("09012345678") == "09012345678"
+    assert _normalize_recipient_phone("03-1234-5678") == "0312345678"
+
+
+def test_normalize_recipient_phone_foreign_rejected():
+    """Foreign numbers must return empty string — never coerce to domestic."""
+    assert _normalize_recipient_phone("+821042977511") == ""
+    assert _normalize_recipient_phone("+1-555-123-4567") == ""
+    assert _normalize_recipient_phone("+44 20 7946 0958") == ""
+
+
+def test_normalize_recipient_phone_empty():
+    """Empty or whitespace input returns empty."""
+    assert _normalize_recipient_phone("") == ""
+    assert _normalize_recipient_phone("  ") == ""

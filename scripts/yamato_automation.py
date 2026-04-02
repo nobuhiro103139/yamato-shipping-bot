@@ -188,6 +188,21 @@ def _normalize_chome_token(token: str) -> str:
     return str(parsed) if parsed is not None else ""
 
 
+def _normalize_recipient_phone(raw: str) -> str:
+    """Normalize a phone number for Yamato recipient input.
+
+    - Japanese numbers (+81 or domestic 0...) are returned in domestic format.
+    - Foreign international numbers (+XX where XX != 81) return empty string
+      to avoid fabricating a fake Japanese number.
+    """
+    phone_raw = raw.replace("-", "").replace(" ", "").strip()
+    if phone_raw.startswith("+81"):
+        return "0" + phone_raw[3:]
+    elif phone_raw.startswith("+"):
+        return ""
+    return phone_raw
+
+
 def _parse_address_line_components(address1: str) -> dict[str, str]:
     parsed = {
         "chome": "",
@@ -1025,14 +1040,12 @@ async def _fill_recipient_info(page: "Page", order: RentalOrder) -> None:
     elif addr.address2:
         await _fill_input(page, YAMATO_SELECTORS["recipient_address4"], addr.address2)
 
-    phone_raw = addr.phone.replace("-", "").replace(" ", "").strip()
-    if phone_raw.startswith("+81"):
-        phone = "0" + phone_raw[3:]
-    elif phone_raw.startswith("+"):
-        # Best effort: strip + and 1-2 digit country code, prepend 0
-        phone = "0" + re.sub(r"^\+\d{1,2}", "", phone_raw)
-    else:
-        phone = phone_raw
+    phone = _normalize_recipient_phone(addr.phone)
+    if not phone and addr.phone.replace("-", "").replace(" ", "").strip().startswith("+"):
+        logger.warning(
+            "Skipping recipient phone auto-fill: foreign number %s is unsupported for Yamato",
+            addr.phone.strip(),
+        )
     if phone:
         await _fill_input(page, YAMATO_SELECTORS["recipient_phone"], phone)
 
@@ -1075,18 +1088,19 @@ async def _fill_recipient_info(page: "Page", order: RentalOrder) -> None:
         }
     }""")
 
-    # Normalize phone in DOM if it still has international prefix
+    # Normalize phone in DOM: only fix +81 (Japan) prefix; clear foreign numbers
     await page.evaluate(r"""() => {
         const ph = document.querySelector('input[name="viwb3040ActionBean.phoneNumber"]');
         if (ph && ph.value && ph.value.startsWith('+')) {
             let v = ph.value.replace(/-/g, '').replace(/\s/g, '');
             if (v.startsWith('+81')) {
                 v = '0' + v.slice(3);
-            } else {
-                v = '0' + v.replace(/^\+\d{1,2}/, '');
-            }
-            if (v !== ph.value) {
                 ph.value = v;
+                ph.dispatchEvent(new Event('input', {bubbles: true}));
+                ph.dispatchEvent(new Event('change', {bubbles: true}));
+            } else {
+                // Foreign number — clear the field rather than fabricating a domestic number
+                ph.value = '';
                 ph.dispatchEvent(new Event('input', {bubbles: true}));
                 ph.dispatchEvent(new Event('change', {bubbles: true}));
             }
