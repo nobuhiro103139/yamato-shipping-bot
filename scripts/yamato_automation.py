@@ -761,10 +761,10 @@ async def _select_direct_address_input(page: "Page") -> None:
 async def _fill_recipient_info(page: "Page", order: RentalOrder) -> None:
     addr = order.shipping_address
     logger.info(
-        "Recipient addr: last=%s, first=%s, postal=%s, addr1=%s, addr2=%s, building=%s, chome=%s, banchi=%s, go=%s",
+        "Recipient addr: last=%s, first=%s, postal=%s, addr1=%s, addr2=%s, building=%s, chome=%s, banchi=%s, go=%s, phone=%s",
         addr.last_name, addr.first_name, addr.postal_code,
         addr.address1, addr.address2, addr.building,
-        addr.chome, addr.banchi, addr.go,
+        addr.chome, addr.banchi, addr.go, addr.phone,
     )
 
     # Shopify shippingAddress: lastName=姓, firstName=名 — そのまま入力
@@ -1011,9 +1011,54 @@ async def _fill_recipient_info(page: "Page", order: RentalOrder) -> None:
         )
         logger.info("Prefecture/city after re-lookup: '%s'", address1_val)
 
-    # Step 4: Ensure address2 hidden input exists (Yamato renders it as read-only
-    # display after postal lookup, so the form may lack the actual input element).
-    # Create it from registAddress2 + registChome if absent.
+    # Step 4: Fill address fields
+    if banchi_value:
+        await _fill_input(page, YAMATO_SELECTORS["recipient_address3"], banchi_value)
+    elif address_for_field:
+        await _fill_input(page, YAMATO_SELECTORS["recipient_address3"], address_for_field)
+
+    if go_value:
+        await _fill_input(page, YAMATO_SELECTORS["recipient_address3opt"], go_value)
+
+    if addr.building:
+        await _fill_input(page, YAMATO_SELECTORS["recipient_address4"], addr.building)
+    elif addr.address2:
+        await _fill_input(page, YAMATO_SELECTORS["recipient_address4"], addr.address2)
+
+    phone_raw = addr.phone.replace("-", "").replace(" ", "").strip()
+    if phone_raw.startswith("+81"):
+        phone = "0" + phone_raw[3:]
+    elif phone_raw.startswith("+"):
+        # Best effort: strip + and 1-2 digit country code, prepend 0
+        phone = "0" + re.sub(r"^\+\d{1,2}", "", phone_raw)
+    else:
+        phone = phone_raw
+    if phone:
+        await _fill_input(page, YAMATO_SELECTORS["recipient_phone"], phone)
+
+    if order.customer_email:
+        await _toggle_notification(page, order.customer_email)
+
+    await _uncheck_address_book(page)
+
+    # Step 5: Ensure address2 hidden input exists — done LAST because
+    # notification toggle / address-book uncheck may re-render the form
+    # and remove previously injected elements.
+    addr2_debug = await page.evaluate("""() => {
+        const existing = document.querySelector('input[name="viwb3040ActionBean.address2"]');
+        const regAddr2 = document.querySelector('input[name="viwb3040ActionBean.registAddress2"]');
+        const regChome = document.querySelector('input[name="viwb3040ActionBean.registChome"]');
+        return {
+            existing: existing ? existing.value : null,
+            registAddress2: regAddr2 ? regAddr2.value : null,
+            registChome: regChome ? regChome.value : null,
+        };
+    }""")
+    logger.info(
+        "address2 debug: existing=%s, registAddress2=%s, registChome=%s",
+        addr2_debug.get("existing"), addr2_debug.get("registAddress2"),
+        addr2_debug.get("registChome"),
+    )
     await page.evaluate("""() => {
         const form = document.querySelector('form') || document.body;
         const existing = document.querySelector('input[name="viwb3040ActionBean.address2"]');
@@ -1030,28 +1075,42 @@ async def _fill_recipient_info(page: "Page", order: RentalOrder) -> None:
         }
     }""")
 
-    # Step 5: Fill address fields
-    if banchi_value:
-        await _fill_input(page, YAMATO_SELECTORS["recipient_address3"], banchi_value)
-    elif address_for_field:
-        await _fill_input(page, YAMATO_SELECTORS["recipient_address3"], address_for_field)
+    # Normalize phone in DOM if it still has international prefix
+    await page.evaluate(r"""() => {
+        const ph = document.querySelector('input[name="viwb3040ActionBean.phoneNumber"]');
+        if (ph && ph.value && ph.value.startsWith('+')) {
+            let v = ph.value.replace(/-/g, '').replace(/\s/g, '');
+            if (v.startsWith('+81')) {
+                v = '0' + v.slice(3);
+            } else {
+                v = '0' + v.replace(/^\+\d{1,2}/, '');
+            }
+            if (v !== ph.value) {
+                ph.value = v;
+                ph.dispatchEvent(new Event('input', {bubbles: true}));
+                ph.dispatchEvent(new Event('change', {bubbles: true}));
+            }
+        }
+    }""")
 
-    if go_value:
-        await _fill_input(page, YAMATO_SELECTORS["recipient_address3opt"], go_value)
-
-    if addr.building:
-        await _fill_input(page, YAMATO_SELECTORS["recipient_address4"], addr.building)
-    elif addr.address2:
-        await _fill_input(page, YAMATO_SELECTORS["recipient_address4"], addr.address2)
-
-    phone = addr.phone.replace("+81 ", "0").replace("+81", "0").replace("-", "")
-    if phone:
-        await _fill_input(page, YAMATO_SELECTORS["recipient_phone"], phone)
-
-    if order.customer_email:
-        await _toggle_notification(page, order.customer_email)
-
-    await _uncheck_address_book(page)
+    # Pre-click field snapshot for debugging
+    pre_click_snapshot = await page.evaluate("""() => {
+        const fields = {};
+        const selectors = {
+            address1: 'input[name="viwb3040ActionBean.address1"]',
+            address2: 'input[name="viwb3040ActionBean.address2"]',
+            address3: 'input[name="viwb3040ActionBean.address3"]',
+            address3opt: 'input[name="viwb3040ActionBean.address3opt"]',
+            address4: 'input[name="viwb3040ActionBean.address4"]',
+            phoneNumber: 'input[name="viwb3040ActionBean.phoneNumber"]',
+        };
+        for (const [name, sel] of Object.entries(selectors)) {
+            const el = document.querySelector(sel);
+            fields[name] = el ? el.value : '(not found)';
+        }
+        return fields;
+    }""")
+    logger.info("Pre-click field snapshot: %s", json.dumps(pre_click_snapshot, ensure_ascii=False))
 
     next_btn = page.locator(YAMATO_SELECTORS["next_btn"])
     await page.wait_for_timeout(TIMEOUT_NAVIGATION_MS)
