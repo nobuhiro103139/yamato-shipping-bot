@@ -237,7 +237,7 @@ def _parse_address_line_components(address1: str) -> dict[str, str]:
 
     rest = rest.lstrip("-")
     rest_match = re.match(
-        r"(?P<banchi>\d+)(?:-(?P<go>\d+))?(?P<tail>.*)$",
+        r"(?P<banchi>\d+)(?:(?:番地?|-)(?P<go>\d+))?(?P<tail>.*)$",
         rest,
     )
     if rest_match:
@@ -892,6 +892,34 @@ async def _fill_recipient_info(page: "Page", order: RentalOrder) -> None:
                         candidate_chome,
                     )
 
+        # Fallback: address1 に丁目・番地情報がない場合、address2 を試す
+        # (#1999 型: address1="町名のみ", address2="1-4-5 建物名" など)
+        if not chome_to_select and addr.address2:
+            addr2_normalized = unicodedata.normalize("NFKC", addr.address2).strip()
+            # 先頭が数字パターンの場合のみ fallback（建物名だけの address2 は除外）
+            addr2_match = re.match(r"(\d+)-(\d+)(?:-(\d+))?\s*(.*)", addr2_normalized)
+            if addr2_match:
+                candidate_chome = addr2_match.group(1)
+                fullwidth_candidate = candidate_chome.translate(
+                    str.maketrans("0123456789", "０１２３４５６７８９")
+                )
+                candidate_text = f"{fullwidth_candidate}丁目"
+                if any(candidate_text in opt for opt in chome_options):
+                    chome_to_select = candidate_chome
+                    banchi_value = addr2_match.group(2)
+                    go_value = addr2_match.group(3) or ""
+                    address_for_field = ""
+                    addr2_building = addr2_match.group(4).strip()
+                    if addr2_building and not addr.building:
+                        addr = addr.model_copy(update={"building": addr2_building})
+                    # 数字部分を消費したので address2 から除去し、
+                    # 建物名だけ残す（空なら空）→ address4 への重複入力を防止
+                    addr = addr.model_copy(update={"address2": addr2_building})
+                    logger.info(
+                        "address2 fallback: chome=%s, banchi=%s, go=%s, building=%s",
+                        chome_to_select, banchi_value, go_value, addr2_building,
+                    )
+
         if chome_to_select:
             fullwidth_chome = chome_to_select.translate(
                 str.maketrans("0123456789", "０１２３４５６７８９")
@@ -961,6 +989,27 @@ async def _fill_recipient_info(page: "Page", order: RentalOrder) -> None:
                             "Parsed remaining: banchi=%s, go=%s",
                             banchi_value, go_value,
                         )
+                    elif not remaining_match and not banchi_value and addr.address2:
+                        # address1 に番地がない場合、address2 を fallback で試す
+                        addr2_norm = unicodedata.normalize("NFKC", addr.address2).strip()
+                        addr2_rm = re.match(r"(\d+)(?:-(\d+))?\s*(.*)", addr2_norm)
+                        if addr2_rm:
+                            banchi_value = addr2_rm.group(1)
+                            go_value = addr2_rm.group(2) or ""
+                            address_for_field = ""
+                            addr2_bld = addr2_rm.group(3).strip()
+                            if addr2_bld and not addr.building:
+                                addr = addr.model_copy(update={"building": addr2_bld})
+                            # 数字部分を消費 → address4 への重複入力を防止
+                            addr = addr.model_copy(update={"address2": addr2_bld})
+                            logger.info(
+                                "Named section address2 fallback: banchi=%s, go=%s, building=%s",
+                                banchi_value, go_value, addr2_bld,
+                            )
+                        elif remaining_address.strip():
+                            address_for_field = remaining_address.lstrip("-").strip()
+                        else:
+                            address_for_field = ""
                     elif remaining_address.strip():
                         address_for_field = remaining_address.lstrip("-").strip()
                     else:
@@ -1146,6 +1195,14 @@ async def _fill_recipient_info(page: "Page", order: RentalOrder) -> None:
             is_disabled = await next_btn.first.get_attribute("disabled")
 
         if is_disabled:
+            address1_snapshot = pre_click_snapshot.get("address1", "")
+            if not address1_snapshot or address1_snapshot == "(not found)":
+                raise RuntimeError(
+                    f"Recipient step validation failed: prefecture/city (address1) is empty after "
+                    f"postal lookup — postal code mismatch likely "
+                    f"(postal={addr.postal_code!r}). "
+                    "Verify the postal code is correct and retry."
+                )
             raise RuntimeError(
                 "Recipient step validation failed; next button is still disabled"
             )
@@ -1790,15 +1847,35 @@ async def _fill_delivery_datetime(page: "Page", order: RentalOrder) -> None:
         break
 
     if not combination_set:
-        # Draft-first: 完全一致が見つからなくても、配達日だけでもセットしてドラフト作成を継続する。
-        # 検証フェーズでミスマッチとして報告される。
+        # Draft-first: 完全一致が見つからなくても、まずは配達日を合わせ、
+        # その日に選べる時間帯があれば最も近いものを選んでドラフト作成を継続する。
         logger.warning(
             "DRAFT-FIRST: exact delivery combination unavailable "
             "(delivery_date=%s, delivery_time=%s, candidates=%s, reasons=%s). "
             "Attempting fallback to proceed with draft creation.",
             order.delivery_date, time_value or "0", ship_dates, failure_reasons,
         )
-        # フォールバック: 発送日→配達日だけをセットし、時間帯は指定なしで続行
+
+        def _pick_closest_time(requested: str, available_values: list[str]) -> str:
+            if not available_values:
+                return ""
+            if requested in available_values:
+                return requested
+            try:
+                requested_num = int(requested)
+                numeric = []
+                for value in available_values:
+                    try:
+                        numeric.append((abs(int(value) - requested_num), int(value), value))
+                    except Exception:
+                        continue
+                if numeric:
+                    numeric.sort()
+                    return numeric[0][2]
+            except Exception:
+                pass
+            return available_values[0]
+
         fallback_set = False
         for ship_date in ship_dates:
             option = shipping_select.first.locator(f'option[value="{ship_date}"]')
@@ -1812,15 +1889,52 @@ async def _fill_delivery_datetime(page: "Page", order: RentalOrder) -> None:
             delivery_option = delivery_select.first.locator(
                 f'option[value="{order.delivery_date}"]'
             )
-            if await delivery_option.count() > 0:
-                await delivery_select.first.select_option(value=order.delivery_date)
-                await page.wait_for_timeout(TIMEOUT_DROPDOWN_UPDATE_MS)
-                logger.info(
-                    "DRAFT-FIRST fallback: set ship=%s, deliver=%s, time=none",
-                    ship_date, order.delivery_date,
-                )
-                fallback_set = True
-                break
+            if await delivery_option.count() == 0:
+                continue
+
+            await delivery_select.first.select_option(value=order.delivery_date)
+            await page.wait_for_timeout(TIMEOUT_DROPDOWN_UPDATE_MS)
+
+            time_select_all = page.locator("select#timeToReceiveByTZone")
+            if await time_select_all.count() > 0:
+                time_select = time_select_all.first
+            else:
+                time_select = page.locator(YAMATO_SELECTORS["delivery_time"]).first
+
+            chosen_time = ""
+            if await time_select.count() > 0:
+                enabled_options = await time_select.evaluate("""el => {
+                    return Array.from(el.options).map(o => ({
+                        value: o.value, text: o.text, disabled: o.disabled
+                    }));
+                }""")
+                available_values = [
+                    o["value"]
+                    for o in enabled_options
+                    if not o["disabled"] and o["value"] not in ("0", "")
+                ]
+                chosen_time = _pick_closest_time(time_value or "", available_values)
+                if chosen_time:
+                    try:
+                        await time_select.select_option(value=chosen_time, timeout=5000)
+                    except Exception:
+                        await page.evaluate(f"""() => {{
+                            const sel = document.querySelector('#timeToReceiveByTZone')
+                                || document.querySelector('select[name="viwb4100ActionBean.timeToReceive"]');
+                            if (sel) {{
+                                sel.value = '{chosen_time}';
+                                sel.dispatchEvent(new Event('change', {{bubbles: true}}));
+                            }}
+                        }}""")
+                    await page.wait_for_timeout(TIMEOUT_INPUT_MS)
+
+            logger.info(
+                "DRAFT-FIRST fallback: set ship=%s, deliver=%s, time=%s",
+                ship_date, order.delivery_date, chosen_time or "none",
+            )
+            fallback_set = True
+            break
+
         if not fallback_set:
             # 配達日すらセットできない場合は真にブロッキング
             raise RuntimeError(
