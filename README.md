@@ -51,6 +51,11 @@ uv run python -m scripts.ship health
 
 # テスト用 JSON ペイロードで実行 (DB 更新なし)
 uv run python -m scripts.ship test payload.json
+
+# B2 クラウド取込 CSV を生成 (Playwright 不要・サーバー実行可)
+uv run python -m scripts.ship b2 2098         # Shopify注文番号指定
+uv run python -m scripts.ship b2              # Supabase一括 (当日CSVに集約追記)
+uv run python -m scripts.ship b2-test payload.json
 ```
 
 ## プロジェクト構成
@@ -98,6 +103,9 @@ yamato-shipping-bot/
 | `DEFAULT_PACKAGE_SIZE` | - | デフォルト荷物サイズ (default: `compact`) |
 | `PREFERRED_SHIPPING_LOCATION` | - | 希望の発送場所 (例: `セブンイレブン　　神戸本山`) |
 | `HEADLESS_BROWSER` | - | Playwright headless モード (default: `true`) |
+| `B2_BILLING_CUSTOMER_CODE` | Yes*** | B2 クラウド請求先顧客コード (***`b2` モードで必須) |
+| `B2_FREIGHT_MANAGEMENT_NUMBER` | Yes*** | B2 クラウド運賃管理番号 |
+| `B2_OUTPUT_DIR` | - | B2 CSV 出力先ディレクトリ (default: `b2_output`) |
 
 ## 処理フロー
 

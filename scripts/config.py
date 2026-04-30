@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     shopify_store: str = ""
     shopify_client_id: str = ""
     shopify_client_secret: str = ""
+    b2_billing_customer_code: str = ""
+    b2_freight_management_number: str = ""
+    b2_output_dir: str = "b2_output"
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
@@ -49,6 +52,15 @@ class Settings(BaseSettings):
     @property
     def shopify_configured(self) -> bool:
         return bool(self.shopify_store and self.shopify_client_id and self.shopify_client_secret)
+
+    @property
+    def sender_configured(self) -> bool:
+        return bool(
+            self.sender_name
+            and self.sender_postal_code
+            and self.sender_address1
+            and self.sender_phone
+        )
 
 
 @lru_cache
