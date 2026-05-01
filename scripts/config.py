@@ -62,6 +62,10 @@ class Settings(BaseSettings):
             and self.sender_phone
         )
 
+    @property
+    def b2_configured(self) -> bool:
+        return bool(self.b2_billing_customer_code and self.b2_freight_management_number)
+
 
 @lru_cache
 def get_settings() -> Settings:

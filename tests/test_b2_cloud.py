@@ -1,7 +1,7 @@
 """Tests for the B2 cloud CSV generator.
 
-Validates row construction against the committed sample CSVs
-(``b2cloud_20260429_imakiire.csv``, ``b2cloud_20260429_kaneshiro.csv``).
+Validates row construction, deduplication, encoding safety, and configuration
+validation for the B2 cloud CSV export pipeline.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from scripts.b2_cloud import (
     _format_delivery_date,
     _format_phone,
     _format_postal_code,
+    _read_existing_order_keys,
     append_b2_csv,
     build_b2_row,
 )
@@ -118,6 +119,7 @@ def test_format_delivery_date():
 def test_build_row_matches_imakiire_sample():
     row = build_b2_row(_imakiire_order(), _settings())
     assert len(row) == 95
+    assert row[0] == "#TEST-001"  # お客様管理番号 = order_number (dedup key)
     assert row[1] == "0"  # 送り状種類
     assert row[5] == "2026/05/02"  # お届け予定日
     assert row[6] == "1416"  # 配達時間帯
@@ -201,20 +203,176 @@ def test_append_b2_csv_empty_orders_raises(tmp_path: Path):
         append_b2_csv([], settings)
 
 
-def test_full_csv_field_layout_matches_committed_sample():
-    """Compare row layout against the actual committed sample CSV."""
-    sample = Path("b2cloud_20260429_imakiire.csv")
-    if not sample.exists():
-        pytest.skip("sample CSV not present in working directory")
+def test_full_csv_field_layout_all_95_columns():
+    """Regression guard: validate every column of the generated row.
 
-    text = sample.read_bytes().decode("cp932")
-    rows = list(csv.reader(text.splitlines()))
-    sample_data = rows[1]
-
-    # Freeze "today" at the sample's 出荷予定日 so 列5 matches
+    This test always runs (no external fixture required) and catches
+    any accidental shift in the 95-column layout.
+    """
     with patch.object(b2_cloud, "_today_jst", return_value="2026/04/29"):
         built = build_b2_row(_imakiire_order(), _settings())
 
-    # Compare every column we populate; the rest should both be empty
+    assert len(built) == 95
+
+    # Columns we actively populate
+    expected_populated = {
+        0: "#TEST-001",                                   # お客様管理番号 (order_number)
+        1: "0",                                          # 送り状種類
+        4: "2026/04/29",                                 # 出荷予定日 (frozen)
+        5: "2026/05/02",                                 # お届け予定日
+        6: "1416",                                       # 配達時間帯
+        8: "070-1944-7217",                              # お届け先電話番号
+        10: "214-0039",                                  # お届け先郵便番号
+        11: "神奈川県川崎市多摩区栗谷3-2-11",            # お届け先住所
+        12: "リズ生田 404号室",                           # アパマン名
+        15: "今給黎 ちひろ",                              # お届け先名
+        19: "080-3421-5105",                             # ご依頼主電話番号
+        21: "658-0003",                                  # ご依頼主郵便番号
+        22: "兵庫県神戸市東灘区本山北町5-10-28-1",        # ご依頼主住所
+        24: "ＴｅｃｈＲｅｎｔａｌ",                       # ご依頼主名
+        27: "スマートフォン",                              # 品名１
+        30: "精密機械",                                   # 荷扱い１
+        39: "080342151059",                              # 請求先顧客コード
+        41: "01",                                        # 運賃管理番号
+    }
+
+    for col_idx, expected in expected_populated.items():
+        assert built[col_idx] == expected, (
+            f"column {col_idx + 1} ({HEADER[col_idx]}): "
+            f"expected {expected!r}, got {built[col_idx]!r}"
+        )
+
+    # All other columns must be empty strings
     for i in range(95):
-        assert built[i] == sample_data[i], f"column {i+1} ({HEADER[i]}) mismatch"
+        if i not in expected_populated:
+            assert built[i] == "", (
+                f"column {i + 1} ({HEADER[i]}) should be empty, got {built[i]!r}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# 重複防止テスト
+# ---------------------------------------------------------------------------
+
+def test_append_b2_csv_dedup_skips_already_present_order(tmp_path: Path):
+    """同じ注文番号を 2 回追記しても 2 行目は書き込まれない."""
+    settings = _settings(b2_output_dir=str(tmp_path))
+    append_b2_csv([_imakiire_order()], settings)
+    append_b2_csv([_imakiire_order()], settings)  # 重複
+
+    out = b2_cloud.daily_output_path(settings.b2_output_dir)
+    text = out.read_bytes().decode("cp932")
+    rows = list(csv.reader(text.splitlines()))
+    assert len(rows) == 2, "ヘッダー + データ 1 行のみ (重複なし)"
+
+
+def test_append_b2_csv_dedup_allows_different_orders(tmp_path: Path):
+    """別注文番号は同じ日の CSV に両方書き込まれる."""
+    settings = _settings(b2_output_dir=str(tmp_path))
+    append_b2_csv([_imakiire_order()], settings)
+    append_b2_csv([_kaneshiro_order()], settings)
+
+    out = b2_cloud.daily_output_path(settings.b2_output_dir)
+    text = out.read_bytes().decode("cp932")
+    rows = list(csv.reader(text.splitlines()))
+    assert len(rows) == 3  # ヘッダー + 2 件
+
+
+def test_append_b2_csv_dedup_returns_path_when_all_duplicates(tmp_path: Path):
+    """全件重複の場合もパスを返し、ファイルに変更なし."""
+    settings = _settings(b2_output_dir=str(tmp_path))
+    append_b2_csv([_imakiire_order()], settings)
+    original_size = b2_cloud.daily_output_path(settings.b2_output_dir).stat().st_size
+
+    result = append_b2_csv([_imakiire_order()], settings)
+    assert result == b2_cloud.daily_output_path(settings.b2_output_dir)
+    assert result.stat().st_size == original_size, "ファイルサイズ変化なし"
+
+
+def test_read_existing_order_keys_returns_set(tmp_path: Path):
+    """_read_existing_order_keys が列0 の値をセットで返す."""
+    settings = _settings(b2_output_dir=str(tmp_path))
+    append_b2_csv([_imakiire_order(), _kaneshiro_order()], settings)
+    out = b2_cloud.daily_output_path(settings.b2_output_dir)
+    keys = _read_existing_order_keys(out)
+    assert "#TEST-001" in keys
+    assert "#TEST-002" in keys
+    assert HEADER[0] not in keys, "ヘッダー行はキーセットに含まれない"
+
+
+def test_read_existing_order_keys_nonexistent_file():
+    """存在しないファイルを渡すと空セットを返す (クラッシュしない)."""
+    keys = _read_existing_order_keys(Path("/nonexistent/path.csv"))
+    assert keys == set()
+
+
+# ---------------------------------------------------------------------------
+# B2 必須設定バリデーションテスト
+# ---------------------------------------------------------------------------
+
+def test_b2_configured_true_when_both_set():
+    s = _settings()
+    assert s.b2_configured is True
+
+
+def test_b2_configured_false_when_billing_missing():
+    s = _settings(b2_billing_customer_code="")
+    assert s.b2_configured is False
+
+
+def test_b2_configured_false_when_freight_missing():
+    s = _settings(b2_freight_management_number="")
+    assert s.b2_configured is False
+
+
+def test_b2_configured_false_when_both_missing():
+    s = _settings(b2_billing_customer_code="", b2_freight_management_number="")
+    assert s.b2_configured is False
+
+
+# ---------------------------------------------------------------------------
+# CP932 変換失敗テスト
+# ---------------------------------------------------------------------------
+
+def _order_with_bad_address(address1: str) -> RentalOrder:
+    """CP932 非対応文字を含む住所を持つ注文を生成するヘルパー."""
+    return RentalOrder(
+        order_id="rental-bad",
+        order_number="#BAD-001",
+        shipping_address=ShippingAddress(
+            last_name="テスト",
+            first_name="ユーザ",
+            postal_code="100-0001",
+            province="東京都",
+            city="千代田区",
+            address1=address1,
+            phone="03-1234-5678",
+        ),
+        items=[OrderItem(title="スマートフォン", quantity=1)],
+        package_size=PackageSize.COMPACT,
+        delivery_date="20260501",
+        delivery_time=DeliveryTimeSlot.NONE,
+    )
+
+
+def test_cp932_unencodable_raises_with_order_context(tmp_path: Path):
+    """CP932 で表現できない文字 (例: emoji) を含む注文は ValueError を送出する."""
+    order = _order_with_bad_address("千代田1-1🚀")  # rocket emoji — not in CP932
+    settings = _settings(b2_output_dir=str(tmp_path))
+    with pytest.raises(ValueError, match="CP932エンコード失敗"):
+        append_b2_csv([order], settings)
+
+
+def test_cp932_unencodable_error_includes_order_number(tmp_path: Path):
+    """エラーメッセージに注文番号が含まれる."""
+    order = _order_with_bad_address("千代田1-1\u2603")  # snowman — not in CP932
+    settings = _settings(b2_output_dir=str(tmp_path))
+    with pytest.raises(ValueError) as exc_info:
+        append_b2_csv([order], settings)
+    assert order.order_number in str(exc_info.value)
+
+
+def test_cp932_valid_characters_do_not_raise(tmp_path: Path):
+    """通常の日本語住所は CP932 変換でエラーにならない."""
+    settings = _settings(b2_output_dir=str(tmp_path))
+    append_b2_csv([_imakiire_order()], settings)  # should not raise

@@ -147,6 +147,8 @@ def build_b2_row(order: RentalOrder, settings: Settings) -> list[str]:
     """注文 1 件を 95 列の B2 取込行に変換."""
     row = [""] * 95
 
+    # お客様管理番号 (列1): 注文番号を安定した照合キーとして使用
+    row[0] = order.order_number
     # 送り状種類 (列2): 発払い
     row[1] = INVOICE_TYPE_HASSO
     # 出荷予定日 (列5): 当日
@@ -197,8 +199,28 @@ def daily_output_path(output_dir: str | Path, when: datetime | None = None) -> P
     return Path(output_dir) / f"b2cloud_{when.strftime('%Y%m%d')}.csv"
 
 
+def _read_existing_order_keys(path: Path) -> set[str]:
+    """既存 CSV からお客様管理番号 (列0) のセットを返す (ヘッダー行は除外)."""
+    try:
+        raw = path.read_bytes()
+        text = raw.decode(ENCODING)
+    except OSError:
+        return set()
+    keys: set[str] = set()
+    for row in csv.reader(text.splitlines()):
+        if row and row[0] and row[0] != HEADER[0]:
+            keys.add(row[0])
+    return keys
+
+
 def append_b2_csv(orders: list[RentalOrder], settings: Settings) -> Path:
     """注文を当日の B2 CSV ファイルに追記 (無ければヘッダー付きで新規作成).
+
+    重複防止: 既存 CSV の「お客様管理番号」列を読み取り、同じ注文番号がすでに
+    存在する場合はスキップする。
+
+    CP932 変換失敗: ``errors="replace"`` は使わない。変換できない文字があれば
+    どの注文・列が原因かを示す ``ValueError`` を送出する。
 
     Returns:
         出力先ファイルパス
@@ -210,9 +232,41 @@ def append_b2_csv(orders: list[RentalOrder], settings: Settings) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     is_new = not output_path.exists()
 
+    # 重複排除: 既存 CSV に含まれる注文番号をスキップ
+    if not is_new:
+        existing_keys = _read_existing_order_keys(output_path)
+        unique_orders: list[RentalOrder] = []
+        for order in orders:
+            if order.order_number in existing_keys:
+                logger.warning(
+                    "Skipping duplicate order %s — already present in %s",
+                    order.order_number,
+                    output_path,
+                )
+            else:
+                unique_orders.append(order)
+        if not unique_orders:
+            logger.info(
+                "All %d order(s) already present in %s — nothing to write",
+                len(orders),
+                output_path,
+            )
+            return output_path
+        orders = unique_orders
+
     rows = [build_b2_row(o, settings) for o in orders]
 
-    # csv モジュールはバイナリ書き込み非対応なので、StringIO で生成 → CP932 で書く
+    # CP932 エンコード検証 — サイレント文字化けを禁止し、原因を特定
+    for order, row in zip(orders, rows):
+        for col_idx, field in enumerate(row):
+            try:
+                field.encode(ENCODING)
+            except UnicodeEncodeError as exc:
+                raise ValueError(
+                    f"CP932エンコード失敗: 注文={order.order_number!r}, "
+                    f"列{col_idx + 1} ({HEADER[col_idx]})={field!r}"
+                ) from exc
+
     buf = io.StringIO()
     writer = csv.writer(buf, quoting=csv.QUOTE_ALL, lineterminator=NEWLINE)
     if is_new:
@@ -220,8 +274,8 @@ def append_b2_csv(orders: list[RentalOrder], settings: Settings) -> Path:
     for row in rows:
         writer.writerow(row)
 
-    data = buf.getvalue().encode(ENCODING, errors="replace")
-    mode = "ab" if not is_new else "wb"
+    data = buf.getvalue().encode(ENCODING)
+    mode = "wb" if is_new else "ab"
     with open(output_path, mode) as f:
         f.write(data)
 

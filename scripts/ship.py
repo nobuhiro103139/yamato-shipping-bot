@@ -290,6 +290,12 @@ async def run_b2_single(order_number: str) -> int:
     if not settings.sender_configured:
         logger.error("Sender info not configured (SENDER_NAME/POSTAL_CODE/ADDRESS1/PHONE)")
         return 1
+    if not settings.b2_configured:
+        logger.error(
+            "B2 cloud credentials not configured: "
+            "B2_BILLING_CUSTOMER_CODE and B2_FREIGHT_MANAGEMENT_NUMBER are required"
+        )
+        return 1
 
     clean = order_number.lstrip("#")
     logger.info("Fetching order #%s from Shopify for B2 export...", clean)
@@ -320,6 +326,12 @@ async def run_b2_batch() -> int:
     if not settings.sender_configured:
         logger.error("Sender info not configured")
         return 1
+    if not settings.b2_configured:
+        logger.error(
+            "B2 cloud credentials not configured: "
+            "B2_BILLING_CUSTOMER_CODE and B2_FREIGHT_MANAGEMENT_NUMBER are required"
+        )
+        return 1
 
     try:
         orders = await fetch_pending_rentals(ready_only=True)
@@ -341,6 +353,12 @@ def run_b2_test(payload_path: str | None = None) -> int:
     settings = get_settings()
     if not settings.sender_configured:
         logger.error("Sender info not configured")
+        return 1
+    if not settings.b2_configured:
+        logger.error(
+            "B2 cloud credentials not configured: "
+            "B2_BILLING_CUSTOMER_CODE and B2_FREIGHT_MANAGEMENT_NUMBER are required"
+        )
         return 1
     order = _build_test_order(payload_path)
     path = append_b2_csv([order], settings)
