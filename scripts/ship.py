@@ -5,6 +5,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+from scripts.b2_cloud import append_b2_csv
 from scripts.config import get_settings
 from scripts.models import (
     DeliveryTimeSlot,
@@ -221,20 +222,16 @@ async def run_single_order(order_number: str) -> int:
         return 1
 
 
-async def run_manual_test(payload_path: str | None = None) -> int:
-    """Run Yamato automation with a manual JSON payload. No DB updates."""
+def _build_test_order(payload_path: str | None = None) -> RentalOrder:
+    """Construct a RentalOrder from a JSON payload (or built-in defaults)."""
     settings = get_settings()
-    if not settings.kuroneko_configured:
-        logger.error("Kuroneko credentials not configured")
-        return 1
-
     if payload_path:
         data = json.loads(Path(payload_path).read_text(encoding="utf-8"))
     else:
         logger.info("No payload file given; using built-in test payload")
         data = {}
 
-    order = RentalOrder(
+    return RentalOrder(
         order_id=data.get("order_id", "manual-test"),
         order_number=data.get("order_number", "#TEST"),
         shipping_address=ShippingAddress(
@@ -255,6 +252,16 @@ async def run_manual_test(payload_path: str | None = None) -> int:
         customer_email=data.get("customer_email", ""),
     )
 
+
+async def run_manual_test(payload_path: str | None = None) -> int:
+    """Run Yamato automation with a manual JSON payload. No DB updates."""
+    settings = get_settings()
+    if not settings.kuroneko_configured:
+        logger.error("Kuroneko credentials not configured")
+        return 1
+
+    order = _build_test_order(payload_path)
+
     logger.info("Manual test: order=%s, recipient=%s %s, postal=%s, addr1=%s",
                 order.order_number, order.shipping_address.last_name,
                 order.shipping_address.first_name, order.shipping_address.postal_code,
@@ -272,6 +279,91 @@ async def run_manual_test(payload_path: str | None = None) -> int:
         else:
             logger.info("Verification: all %d fields match", len(v.fields))
     return 0 if result.status.value == "completed" else 1
+
+
+async def run_b2_single(order_number: str) -> int:
+    """Fetch a single order from Shopify and append a row to today's B2 CSV."""
+    settings = get_settings()
+    if not settings.shopify_configured:
+        logger.error("Shopify credentials not configured")
+        return 1
+    if not settings.sender_configured:
+        logger.error("Sender info not configured (SENDER_NAME/POSTAL_CODE/ADDRESS1/PHONE)")
+        return 1
+    if not settings.b2_configured:
+        logger.error(
+            "B2 cloud credentials not configured: "
+            "B2_BILLING_CUSTOMER_CODE and B2_FREIGHT_MANAGEMENT_NUMBER are required"
+        )
+        return 1
+
+    clean = order_number.lstrip("#")
+    logger.info("Fetching order #%s from Shopify for B2 export...", clean)
+    try:
+        order = await fetch_order_by_number(clean)
+    except ValueError as exc:
+        logger.error("Order not found: %s", exc)
+        return 1
+    except Exception:
+        logger.exception("Failed to fetch order #%s from Shopify", clean)
+        return 1
+
+    path = append_b2_csv([order], settings)
+    logger.info("Appended order %s to %s", order.order_number, path)
+    return 0
+
+
+async def run_b2_batch() -> int:
+    """Append all pending Supabase rentals (ready today) to today's B2 CSV.
+
+    Note: this does NOT mark rentals as shipped — that happens once you
+    actually upload the CSV to B2 cloud and confirm shipment manually.
+    """
+    settings = get_settings()
+    if not settings.supabase_configured:
+        logger.error("Supabase credentials not configured")
+        return 1
+    if not settings.sender_configured:
+        logger.error("Sender info not configured")
+        return 1
+    if not settings.b2_configured:
+        logger.error(
+            "B2 cloud credentials not configured: "
+            "B2_BILLING_CUSTOMER_CODE and B2_FREIGHT_MANAGEMENT_NUMBER are required"
+        )
+        return 1
+
+    try:
+        orders = await fetch_pending_rentals(ready_only=True)
+    except Exception:
+        logger.exception("Failed to fetch rentals from Supabase")
+        return 1
+
+    if not orders:
+        logger.info("No rentals ready to ship today")
+        return 0
+
+    path = append_b2_csv(orders, settings)
+    logger.info("Appended %d order(s) to %s", len(orders), path)
+    return 0
+
+
+def run_b2_test(payload_path: str | None = None) -> int:
+    """Generate a B2 CSV row from a JSON payload (or built-in defaults)."""
+    settings = get_settings()
+    if not settings.sender_configured:
+        logger.error("Sender info not configured")
+        return 1
+    if not settings.b2_configured:
+        logger.error(
+            "B2 cloud credentials not configured: "
+            "B2_BILLING_CUSTOMER_CODE and B2_FREIGHT_MANAGEMENT_NUMBER are required"
+        )
+        return 1
+    order = _build_test_order(payload_path)
+    path = append_b2_csv([order], settings)
+    logger.info("Wrote B2 test row to %s", path)
+    return 0
 
 
 def _looks_like_order_number(arg: str) -> bool:
@@ -292,6 +384,15 @@ def main() -> None:
     elif command == "test":
         payload_path = sys.argv[2] if len(sys.argv) > 2 else None
         code = asyncio.run(run_manual_test(payload_path))
+    elif command == "b2":
+        # `ship b2 <order#>` または `ship b2` (Supabase 一括)
+        if len(sys.argv) > 2:
+            code = asyncio.run(run_b2_single(sys.argv[2]))
+        else:
+            code = asyncio.run(run_b2_batch())
+    elif command == "b2-test":
+        payload_path = sys.argv[2] if len(sys.argv) > 2 else None
+        code = run_b2_test(payload_path)
     elif command == "health":
         settings = get_settings()
         logger.info("Configuration:")
@@ -299,14 +400,24 @@ def main() -> None:
         logger.info("  Kuroneko: %s", "configured" if settings.kuroneko_configured else "NOT SET")
         logger.info("  Shopify: %s", "configured" if settings.shopify_configured else "NOT SET")
         logger.info("  LINE Notify: %s", "configured" if settings.line_notify_configured else "NOT SET")
+        logger.info("  Sender: %s", "configured" if settings.sender_configured else "NOT SET")
+        logger.info(
+            "  B2 cloud: billing=%s, freight=%s, output=%s",
+            settings.b2_billing_customer_code or "NOT SET",
+            settings.b2_freight_management_number or "NOT SET",
+            settings.b2_output_dir,
+        )
         code = 0
     else:
-        print("Usage: python -m scripts.ship [<order_number>|ship|check|health|test [payload.json]]")
+        print("Usage: python -m scripts.ship [<order_number>|ship|check|health|test [payload.json]|b2 [<order#>]|b2-test [payload.json]]")
         print("  <order_number> - Shopifyから注文を取得しヤマト自動入力 (例: 2011)")
-        print("  ship   - Supabase上の発送対象(rentals)を処理 (デフォルト)")
-        print("  check  - Supabase上のpending rentalsを一覧表示(処理なし)")
-        print("  test   - Manual test with JSON payload (no DB updates)")
-        print("  health - Check configuration status")
+        print("  ship    - Supabase上の発送対象(rentals)を処理 (デフォルト)")
+        print("  check   - Supabase上のpending rentalsを一覧表示(処理なし)")
+        print("  test    - Manual test with JSON payload (no DB updates)")
+        print("  b2 <#>  - Shopifyから注文取得しB2クラウドCSVに追記")
+        print("  b2      - Supabase上の発送対象を当日B2クラウドCSVにまとめて追記")
+        print("  b2-test - JSONペイロードからB2 CSV生成")
+        print("  health  - Check configuration status")
         code = 2
 
     sys.exit(code)
