@@ -106,6 +106,14 @@ def test_format_phone_already_hyphenated():
     assert _format_phone("080-3421-5105") == "080-3421-5105"
 
 
+def test_format_phone_plus81_mobile():
+    assert _format_phone("+818042127753") == "080-4212-7753"
+
+
+def test_format_phone_plus81_mobile_without_plus():
+    assert _format_phone("819023737233") == "090-2373-7233"
+
+
 def test_format_phone_10_digit_tokyo():
     assert _format_phone("0312345678") == "03-1234-5678"
 

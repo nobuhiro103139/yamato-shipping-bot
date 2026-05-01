@@ -90,24 +90,29 @@ def _format_postal_code(raw: str) -> str:
 
 
 def _format_phone(raw: str) -> str:
-    """電話番号をハイフン区切りに整形.
+    """電話番号をB2向け国内形式に整形.
 
-    既にハイフン付きならそのまま返す。数字のみ 10/11 桁の場合は
-    ``XXX-XXXX-XXXX`` (携帯/IP) または ``XX-XXXX-XXXX`` (固定) に整形。
+    - `+81xxxxxxxxxx` は先頭を `0` に戻す
+    - 既にハイフン付きでも、まず数字へ正規化してから整形する
+    - 11桁は `XXX-XXXX-XXXX`
+    - 10桁は `03/06` のみ `XX-XXXX-XXXX`、それ以外は `XXX-XXX-XXXX`
     """
     if not raw:
         return ""
-    if "-" in raw:
-        return raw
+
     digits = "".join(ch for ch in raw if ch.isdigit())
+
+    # 日本の国番号 +81 を国内表記 0 始まりへ戻す
+    if digits.startswith("81") and len(digits) in (11, 12):
+        digits = f"0{digits[2:]}"
+
     if len(digits) == 11:
         return f"{digits[:3]}-{digits[3:7]}-{digits[7:]}"
     if len(digits) == 10:
-        # 03/06 など 2 桁市外局番
         if digits.startswith(("03", "06")):
             return f"{digits[:2]}-{digits[2:6]}-{digits[6:]}"
         return f"{digits[:3]}-{digits[3:6]}-{digits[6:]}"
-    return raw
+    return digits or raw
 
 
 def _format_delivery_date(yyyymmdd: str) -> str:
@@ -122,10 +127,78 @@ def _today_jst() -> str:
     return datetime.now(JST).strftime("%Y/%m/%d")
 
 
+PREFECTURE_NORMALIZATION: dict[str, str] = {
+    "hokkaido": "北海道",
+    "aomori": "青森県",
+    "iwate": "岩手県",
+    "miyagi": "宮城県",
+    "akita": "秋田県",
+    "yamagata": "山形県",
+    "fukushima": "福島県",
+    "ibaraki": "茨城県",
+    "tochigi": "栃木県",
+    "gunma": "群馬県",
+    "saitama": "埼玉県",
+    "chiba": "千葉県",
+    "tokyo": "東京都",
+    "kanagawa": "神奈川県",
+    "niigata": "新潟県",
+    "toyama": "富山県",
+    "ishikawa": "石川県",
+    "fukui": "福井県",
+    "yamanashi": "山梨県",
+    "nagano": "長野県",
+    "gifu": "岐阜県",
+    "shizuoka": "静岡県",
+    "aichi": "愛知県",
+    "mie": "三重県",
+    "shiga": "滋賀県",
+    "kyoto": "京都府",
+    "osaka": "大阪府",
+    "hyogo": "兵庫県",
+    "nara": "奈良県",
+    "wakayama": "和歌山県",
+    "tottori": "鳥取県",
+    "shimane": "島根県",
+    "okayama": "岡山県",
+    "hiroshima": "広島県",
+    "yamaguchi": "山口県",
+    "tokushima": "徳島県",
+    "kagawa": "香川県",
+    "ehime": "愛媛県",
+    "kochi": "高知県",
+    "fukuoka": "福岡県",
+    "saga": "佐賀県",
+    "nagasaki": "長崎県",
+    "kumamoto": "熊本県",
+    "oita": "大分県",
+    "miyazaki": "宮崎県",
+    "kagoshima": "鹿児島県",
+    "okinawa": "沖縄県",
+}
+
+
+def _normalize_prefecture(raw: str) -> str:
+    """Shopify由来の都道府県表記を B2 向け日本語表記へ寄せる."""
+    if not raw:
+        return ""
+    normalized = (
+        raw.strip()
+        .lower()
+        .replace("ō", "o")
+        .replace("ô", "o")
+        .replace("ū", "u")
+        .replace("â", "a")
+        .replace("î", "i")
+        .replace("ê", "e")
+    )
+    return PREFECTURE_NORMALIZATION.get(normalized, raw)
+
+
 def _join_address(order: RentalOrder) -> str:
     """都道府県+市区町村+address1 を結合してお届け先住所文字列を生成."""
     addr = order.shipping_address
-    parts = [addr.province, addr.city, addr.address1]
+    parts = [_normalize_prefecture(addr.province), addr.city, addr.address1]
     return "".join(p for p in parts if p)
 
 
